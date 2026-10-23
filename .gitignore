@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+__MACOSX/
+._*
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+*~
+Thumbs.db
+
+# Build output and test artifacts (releases go to GitHub Releases)
+dist/
+build/
+*.log
+tmp/
+*.aseprite-extension
+
+# Local Claude Code state
+.claude/

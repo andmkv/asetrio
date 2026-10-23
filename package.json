@@ -1,0 +1,28 @@
+{
+  "name": "palette-trio",
+  "displayName": "Palette Trio",
+  "description": "Shadow/base/light shade families for every color in your Aseprite palette, plus non-destructive pixel-art lighting",
+  "version": "0.3.0",
+  "author": {
+    "name": "Andrey Makeev",
+    "url": "https://smallhall.net"
+  },
+  "publisher": "palette-trio",
+  "license": "MIT",
+  "homepage": "https://github.com/andmkv/asetrio",
+  "bugs": "https://github.com/andmkv/asetrio/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/andmkv/asetrio.git"
+  },
+  "categories": [
+    "Scripts"
+  ],
+  "contributes": {
+    "scripts": [
+      {
+        "path": "./main.lua"
+      }
+    ]
+  }
+}
