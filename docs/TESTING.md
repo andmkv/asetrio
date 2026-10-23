@@ -11,7 +11,7 @@ ASEPRITE=/path/to/aseprite ./tests/run.sh
 |---|---|
 | `tests/run.lua` (76 tests) | Shade model, OKLCH color math, native-palette sync rules, subset exclusions, ordering, grid and toolbar geometry at narrow/default/wide widths, persistence errors, and the Light engine (family detection, eyedropper resolution, shade matching, Matte vs Glossy materials, point light direction/distance/falloff, preview zoom and pan). |
 | `tests/integration.lua` (28 tests) | Real Aseprite API: 5/32/64/256-color palettes, palette edits and deletions, exclusions, save/reopen `.aseprite` vs PNG, indexed-palette safety, writing to the palette with undo, menu registration (one command, checked against `gui.xml`), Light on real cels, replace-source with undo, document switching. |
-| `tests/smoke_dialogs.lua` (30 steps) | Every dialog against a strict fake `Dialog` (the real one is `nil` in batch mode): panel input, the `...` menu, About, editor, settings, choosers, Light, the family list and the preview eyedropper. Also checks that nothing writes window bounds after opening and that no widget visibility is toggled. |
+| `tests/smoke_dialogs.lua` (31 steps) | Every dialog against a strict fake `Dialog` (the real one is `nil` in batch mode): panel input, the `...` menu, About, editor, settings, choosers, Light, the family list and the preview eyedropper. Also checks that nothing writes window bounds after opening and that no widget visibility is toggled. |
 
 ## What the automated tests cannot prove
 

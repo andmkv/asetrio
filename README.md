@@ -180,7 +180,7 @@ Details:
 
 - Only pixels that belong to a family are shaded. Transparent pixels, unknown colors and the colors listed under *Keep colors* stay as they are. Alpha is kept.
 - Options (in the dialog): **Keep outlines** (leaves the 1-pixel alpha outline unshaded), **Separate objects** (shades disconnected objects one by one).
-- The dialog is compact; if it still does not fit your screen, it gets scrollbars. **Refresh** (bottom row) re-reads the layer list.
+- The dialog is compact; if it still does not fit your screen, it gets scrollbars. **Refresh** (bottom row) re-reads the layer list, and **Colors...** opens the choice of which palette colors are families (the preview updates when you apply it).
 - Light works on the current frame and on RGB sprites only. There are no cast shadows.
 - The result is a stylized 2.5D shading from the object's silhouette, so it works best on simple shapes. Large layers can take a moment to preview.
 

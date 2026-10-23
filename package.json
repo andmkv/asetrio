@@ -2,7 +2,7 @@
   "name": "palette-trio",
   "displayName": "Palette Trio",
   "description": "Shadow/base/light shade families for every color in your Aseprite palette, plus non-destructive pixel-art lighting",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": {
     "name": "Andrey Makeev",
     "url": "https://smallhall.net"

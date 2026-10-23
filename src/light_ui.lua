@@ -723,9 +723,12 @@ local function buildDialog(ctx)
   dlg:separator()
   dlg:button { id = "applyLight", text = "Apply to new layer", focus = true, onclick = function() applyOutput(ctx) end }
   dlg:button { id = "refreshLayers", text = "Refresh", onclick = function() UI.reload(ctx) end }
+  -- Light shades with the Palette Trio families, so this opens the choice of
+  -- which palette colors are families (and makes sure the panel is open).
+  -- The preview refreshes when the choice is applied.
   dlg:button { id = "openPalette", text = "Colors...", onclick = function()
     ctx.ui.open(ctx)
-    if ctx.currentSprite and #ctx.model.rows == 0 then ctx.dialogs.openChooser(ctx, "palette") end
+    if ctx.currentSprite then ctx.dialogs.openChooser(ctx, "palette") end
   end }
   -- autoscrollbars: if the window does not fit the screen (or is made
   -- smaller), Aseprite adds scrollbars instead of cutting controls off.

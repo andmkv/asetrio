@@ -533,6 +533,29 @@ step("Light Height and Falloff sliders change the preview and are saved", functi
   local saved = ctx.lightAseprite.loadShared(sprite, ctx.namespace)
   assert(saved.lightHeight == 7 and saved.falloff == 80)
 end)
+step("Light Colors... always opens the palette color chooser and refreshes the preview", function()
+  local light = ctx.lightDialog
+  local before = #ctx.model.rows
+  local opened = 0
+  FakeShowHook = function(dlg)
+    if dlg._options.title ~= "Choose Palette Colors" then return end
+    opened = opened + 1
+    FakeShowHook = nil
+    fire(dlg, "none", "onclick")
+    fire(dlg, "colors", "onmousedown", { x = 1, y = 1, button = MouseButton.LEFT })
+    local d = dlg.data
+    d.ok = true
+    dlg.data = d
+  end
+  fire(light, "openPalette", "onclick")
+  assert(opened == 1, "the chooser opens even though families already exist")
+  assert(#ctx.model.rows < before, "applying the choice changed the families: " .. #ctx.model.rows)
+  assert(ctx.lightDialog == light and ctx.light.previewImage ~= nil or ctx.light.status ~= nil, "Light stays open")
+  -- Restore all palette colors for the following steps.
+  ctx.session.useFullPalette(ctx)
+  assert(#ctx.model.rows >= before)
+  ctx.lightUI.regeneratePreview(ctx)
+end)
 step("Light Material: Glossy regenerates and is saved on the layer", function()
   local light = ctx.lightDialog
   assert(light:widget("material"), "Material control exists")

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- Fixed: the **Colors...** button in Light did nothing when Palette Trio's panel was already open and families existed. It now always opens **Choose palette colors**, and the preview refreshes when you apply the choice.
+
 ## 0.4.0
 
 - Light: the light is now a **point light**. Click or drag in the preview to place it anywhere, including outside the object; its position sets both direction and distance. **Height** (px) replaces Elevation, and a new **Falloff** slider controls how much the light weakens with distance. The preview can be zoomed (wheel), panned (Alt/Shift/middle-drag) and fitted (double-click). Existing settings are converted to an equivalent light position on first use.
