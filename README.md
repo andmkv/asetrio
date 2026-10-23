@@ -23,7 +23,7 @@ Click a swatch to paint with it. Change a color in Aseprite's own palette and it
 
 ## Beta status, and please read this
 
-Palette Trio is a **public beta (0.3)**. It has been tested by hand on macOS with Aseprite 1.3.17 and by automated tests (see [Development](#development)). Windows and Linux are untested. Please report problems on the [issue tracker](https://github.com/andmkv/asetrio/issues).
+Palette Trio is a **public beta (0.4)**. It has been tested by hand on macOS with Aseprite 1.3.17 and by automated tests (see [Development](#development)). Windows and Linux are untested. Please report problems on the [issue tracker](https://github.com/andmkv/asetrio/issues).
 
 > ### ⚠ Light: "Replace source" is not safe across restarts
 >
@@ -136,9 +136,40 @@ Light shades flat artwork with the Palette Trio families. Open it from the **sun
 
 1. Paint your object with base colors (or with any family's shades).
 2. Choose the **Layer**.
-3. **Family**: leave it on **Auto (detect)**, or choose one. Auto finds the family that dominates the layer; any shade of a family counts. To choose by eye, click **Pick** and then click the object in the preview (right-click on the preview also picks). The paint color selected in Aseprite is never used.
-4. Choose a **Shape** (Round, Box/Bevel, Cylinder, Contour), drag the light marker in the preview, and adjust **Elevation**, **Contrast**, **Shades** (3 or 5) and **Dither**.
-5. Choose the **Output** and press the button.
+3. **Family** shows the colors Light will use as a small strip. By default the family is detected automatically from the layer (any shade of a family counts). To choose by eye, click **Pick** and then the object in the preview (right-click on the preview also picks); **Auto** goes back to detection. The paint color selected in Aseprite is never used.
+4. Choose a **Shape** (Sphere, Box, Cylinder horizontal or vertical, Contour) and a **Material** on the same row. **Form** is the bevel width for Box and the curvature for Cylinder and Contour.
+5. **Place the light** by clicking or dragging in the preview. It can go anywhere, including far outside the object.
+6. Adjust **Height**, **Falloff**, **Contrast**, **Shades** (3 or 5) and **Dither**, then choose the **Output** and press the button.
+
+### The light
+
+The light is a point in the scene with a position and a height above the image:
+
+- **Position** sets the direction *and* the distance. Moving the light around changes which side is lit; moving it closer gives a stronger gradient across the object, moving it away makes the light flatter and dimmer.
+- **Height** (in pixels): a low light grazes the surface and casts long shading; a high light comes from above and lights the object more evenly.
+- **Falloff** (0–100%): how much the light weakens with distance. At 0 only the angle changes with distance.
+- In the preview: **drag** to move the light, **mouse wheel** to zoom, **Alt+drag**, **Shift+drag** or **middle-drag** to pan, **double-click** to fit the view. When the light is outside the view, its marker waits on the edge, hollow.
+
+![Same sphere, light near, mid and far](docs/images/light-distance.png)
+
+*Same direction, light near (left), mid and far (right), 5 shades, falloff 40%. The yellow square is the light.*
+
+The light position, height and falloff are saved in the sprite; shape, material and a picked family are saved per layer.
+
+### Material
+
+| Material | Look |
+|---|---|
+| **Matte** (default) | Soft diffuse light. The lit side uses the light shades. |
+| **Glossy** | More contrast in the body and a crisp highlight where the light glances off: a spot on a sphere, a band on a cylinder, the lit edge of a bevelled box. Only the highlight uses the brightest shade (LIGHT with 3 shades, BRIGHT with 5), and it is never dithered. |
+
+![Matte (top) and Glossy (bottom), 5 shades](docs/images/light-materials.png)
+
+*Top: Matte. Bottom: Glossy. Same objects, light and palette, 5 shades.*
+
+The material is saved per layer, like the shape.
+
+### Output
 
 | Output | Behavior |
 |---|---|
@@ -148,7 +179,8 @@ Light shades flat artwork with the Palette Trio families. Open it from the **sun
 Details:
 
 - Only pixels that belong to a family are shaded. Transparent pixels, unknown colors and the colors listed under *Keep colors* stay as they are. Alpha is kept.
-- Options (in the dialog): keep 1-pixel outlines, shade separate objects separately.
+- Options (in the dialog): **Keep outlines** (leaves the 1-pixel alpha outline unshaded), **Separate objects** (shades disconnected objects one by one).
+- The dialog is compact; if it still does not fit your screen, it gets scrollbars. **Refresh** (bottom row) re-reads the layer list.
 - Light works on the current frame and on RGB sprites only. There are no cast shadows.
 - The result is a stylized 2.5D shading from the object's silhouette, so it works best on simple shapes. Large layers can take a moment to preview.
 

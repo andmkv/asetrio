@@ -12,6 +12,7 @@ local Light = loadProjectModule("src/light_engine.lua")
 local LightAseprite = loadProjectModule("src/light_aseprite.lua")
 local Source = loadProjectModule("src/source.lua")
 local Grid = loadProjectModule("src/grid.lua")
+local LightView = loadProjectModule("src/light_view.lua")
 
 local passed, failed = 0, 0
 
@@ -937,6 +938,243 @@ test("render: explicit family shades unknown-colored pixels; other families and 
   equal(out[3].r, 1, "excluded color untouched")
   equal(out[4].a, 0, "transparent untouched")
   local _ = model
+end)
+
+------------------------------------------------------------------------------
+-- Light materials: Matte (original model) and Glossy (specular highlight)
+------------------------------------------------------------------------------
+
+local function materialScene(shapeParams, w, h, inside)
+  local base = rgb(180, 60, 50)
+  local model = Model.new(Color)
+  model.newRow(model, base)
+  local pixels = imagePixels(w, h, function(x, y)
+    if inside(x, y) then return { r = base.r, g = base.g, b = base.b, a = 255 } end
+    return { r = 0, g = 0, b = 0, a = 0 }
+  end)
+  local mask, key = Light.extractSilhouette(pixels, w, h)
+  local geometry = Light.buildGeometry(mask, w, h, shapeParams, {}, key)
+  return model, pixels, geometry
+end
+
+local function levelCounts(output, family)
+  local counts, byKey = {}, {}
+  for i, c in ipairs(family.colors) do byKey[Light.rgbKey(c)] = i end
+  for i, p in ipairs(output) do
+    if p.a > 0 then
+      local level = byKey[Light.rgbKey(p)]
+      if level then counts[level] = (counts[level] or 0) + 1 end
+    end
+  end
+  return counts
+end
+
+local function sphereScene()
+  return materialScene({ shape = "Round / Sphere" }, 33, 33, function(x, y) return (x - 17) ^ 2 + (y - 17) ^ 2 <= 15 ^ 2 end)
+end
+
+local LIGHT_OPTS = { directionX = -0.7, directionY = 0.7, elevation = 38, strength = 1.15 }
+local function opts(extra)
+  local o = {}
+  for k, v in pairs(LIGHT_OPTS) do o[k] = v end
+  for k, v in pairs(extra) do o[k] = v end
+  return o
+end
+
+test("Matte is the original Light model: identical output with or without the option", function()
+  local model, pixels, geometry = sphereScene()
+  local families = model.shadeFamilies(model, 5)
+  local before = Light.render(pixels, 33, 33, families, geometry, opts({ levels = 5 }))
+  local matte = Light.render(pixels, 33, 33, families, geometry, opts({ levels = 5, material = "Matte" }))
+  for i = 1, #before do
+    assert(before[i].r == matte[i].r and before[i].g == matte[i].g and before[i].b == matte[i].b, "pixel " .. i)
+  end
+end)
+
+test("Glossy sphere: a small top-shade highlight on the lit side; body keeps below it", function()
+  local model, pixels, geometry = sphereScene()
+  for _, levels in ipairs({ 3, 5 }) do
+    local families = model.shadeFamilies(model, levels)
+    local matte = levelCounts(Light.render(pixels, 33, 33, families, geometry, opts({ levels = levels })), families[1])
+    local out, stats = Light.render(pixels, 33, 33, families, geometry, opts({ levels = levels, material = "Glossy" }))
+    local glossy = levelCounts(out, families[1])
+    assert((glossy[levels] or 0) > 0, "glossy has a highlight at " .. levels .. " shades")
+    assert(glossy[levels] < (matte[levels] or 0), "glossy highlight is smaller than matte's lit area")
+    equal(stats.highlights, glossy[levels])
+    -- Highlight centroid sits toward the light (upper-left: x small, y small).
+    local sx, sy, n = 0, 0, 0
+    local top = Light.rgbKey(families[1].colors[levels])
+    for y = 1, 33 do for x = 1, 33 do
+      local p = out[(y - 1) * 33 + x]
+      if p.a > 0 and Light.rgbKey(p) == top then sx, sy, n = sx + x, sy + y, n + 1 end
+    end end
+    assert(sx / n < 17 and sy / n < 17, string.format("highlight toward the light (%.1f, %.1f)", sx / n, sy / n))
+  end
+end)
+
+test("Glossy shows a highlight on cylinders and bevelled boxes too (relative to the object's peak)", function()
+  local cases = {
+    { { shape = "Cylinder", cylinderAxis = "Horizontal" }, 36, 22, function() return true end },
+    { { shape = "Box / Beveled rectangle", bevel = 5 }, 32, 26, function() return true end },
+  }
+  for _, case in ipairs(cases) do
+    local model, pixels, geometry = materialScene(case[1], case[2], case[3], case[4])
+    local families = model.shadeFamilies(model, 3)
+    local _, stats = Light.render(pixels, case[2], case[3], families, geometry, opts({ levels = 3, material = "Glossy" }))
+    assert((stats.highlights or 0) > 0, case[1].shape .. " gets a highlight")
+    assert(stats.highlights < case[2] * case[3] / 2, case[1].shape .. " highlight stays a highlight")
+  end
+end)
+
+test("Glossy: dithering never pushes body pixels into the highlight shade", function()
+  local model, pixels, geometry = sphereScene()
+  local families = model.shadeFamilies(model, 3)
+  for _, dither in ipairs({ "Bayer 2x2", "Bayer 4x4" }) do
+    local plain = levelCounts(Light.render(pixels, 33, 33, families, geometry, opts({ levels = 3, material = "Glossy" })), families[1])
+    local dithered = levelCounts(Light.render(pixels, 33, 33, families, geometry,
+      opts({ levels = 3, material = "Glossy", dither = dither })), families[1])
+    equal(dithered[3], plain[3], dither .. ": highlight unchanged by dither")
+  end
+end)
+
+test("Glossy with light that never glances off (grazing on a flat face) adds no highlight", function()
+  local model, pixels = materialScene({ shape = "Round / Sphere" }, 4, 4, function() return true end)
+  local families = model.shadeFamilies(model, 3)
+  local geometry = constantGeometry(4, 4, 0, 0, 1)
+  local _, stats = Light.render(pixels, 4, 4, families, geometry,
+    { levels = 3, directionX = 1, directionY = 0, elevation = 1, strength = 1, material = "Glossy" })
+  equal(stats.highlights, nil)
+end)
+
+test("material setting is stored per layer and defaults to Matte", function()
+  equal(LightAseprite.defaultLayer().material, "Matte")
+  equal(LightAseprite.normalizeLayer({ material = "Glossy" }).material, "Glossy")
+  equal(LightAseprite.normalizeLayer({ material = "Chrome" }).material, "Matte")
+  equal(LightAseprite.normalizeLayer({}).material, "Matte", "older layer settings load as Matte")
+end)
+
+------------------------------------------------------------------------------
+-- Point light: position + height + falloff; preview view transform
+------------------------------------------------------------------------------
+
+local function levelSum(output, family)
+  local byKey, sum, n = {}, 0, 0
+  for i, c in ipairs(family.colors) do byKey[Light.rgbKey(c)] = i end
+  for _, p in ipairs(output) do
+    local level = p.a > 0 and byKey[Light.rgbKey(p)]
+    if level then sum, n = sum + level, n + 1 end
+  end
+  return sum / math.max(1, n)
+end
+
+local function pointRender(light, extra)
+  local model, pixels, geometry = sphereScene()
+  local families = model.shadeFamilies(model, 5)
+  local o = { levels = 5, strength = 1.15, pointLight = light }
+  for k, v in pairs(extra or {}) do o[k] = v end
+  return Light.render(pixels, 33, 33, families, geometry, o), families[1]
+end
+
+test("point light without falloff converges to the directional light when far away", function()
+  local model, pixels, geometry = sphereScene()
+  local families = model.shadeFamilies(model, 5)
+  local directional = Light.render(pixels, 33, 33, families, geometry,
+    { levels = 5, strength = 1.15, directionX = -0.7, directionY = 0.7, elevation = 40 })
+  local lx, ly = Light.pointFromDirection(-0.7, 0.7, 40, 16.5, 16.5, 100000)
+  local point = Light.render(pixels, 33, 33, families, geometry,
+    { levels = 5, strength = 1.15, pointLight = { x = lx, y = ly, z = 100000, falloff = 0, size = 30 } })
+  local same, total = 0, 0
+  for i = 1, #point do
+    if point[i].a > 0 then
+      total = total + 1
+      if Light.rgbKey(point[i]) == Light.rgbKey(directional[i]) then same = same + 1 end
+    end
+  end
+  assert(same / total > 0.98, string.format("far point light matches directional (%d/%d)", same, total))
+end)
+
+test("point light: moving it from the left to the right flips the lit side", function()
+  local function sideBrightness(lightX)
+    local out, family = pointRender({ x = lightX, y = 16.5, z = 20, falloff = 0, size = 30 })
+    local left, right = {}, {}
+    for y = 1, 33 do for x = 1, 33 do
+      local p = out[(y - 1) * 33 + x]
+      if p.a > 0 then
+        if x < 15 then left[#left + 1] = p elseif x > 19 then right[#right + 1] = p end
+      end
+    end end
+    return levelSum(left, family), levelSum(right, family)
+  end
+  local l1, r1 = sideBrightness(-30)
+  local l2, r2 = sideBrightness(63)
+  assert(l1 > r1, "light on the left lights the left side")
+  assert(r2 > l2, "light on the right lights the right side")
+end)
+
+test("point light: distance matters - farther is dimmer, closer is brighter (with falloff)", function()
+  local near = levelSum(pointRender({ x = 0, y = 0, z = 25, falloff = 0.5, size = 30 }))
+  local reference = levelSum(pointRender({ x = -15, y = -15, z = 25, falloff = 0.5, size = 30 }))
+  local far = levelSum(pointRender({ x = -120, y = -120, z = 25, falloff = 0.5, size = 30 }))
+  assert(near > reference and reference > far, string.format("near %.2f > ref %.2f > far %.2f", near, reference, far))
+  local noFalloffFar = levelSum(pointRender({ x = -120, y = -120, z = 25, falloff = 0, size = 30 }))
+  assert(noFalloffFar > far, "without falloff distance only changes the angle")
+  local _, _, _, a1 = Light.pointLightAt({ x = 1000, y = 0, z = 10, falloff = 0, size = 10 }, 0, 0)
+  equal(a1, 1, "falloff 0 means no attenuation")
+  local _, _, _, a2 = Light.pointLightAt({ x = 0.5, y = 0.5, z = 0.5, falloff = 1, size = 10 }, 0, 0)
+  assert(a2 <= Light.FALLOFF_MAX_GAIN + 1e-9, "close light gain is capped")
+end)
+
+test("point light straight above the center lights the object symmetrically", function()
+  local out, family = pointRender({ x = 16.5, y = 16.5, z = 30, falloff = 0.3, size = 30 })
+  local byKey = {}
+  for i, c in ipairs(family.colors) do byKey[Light.rgbKey(c)] = i end
+  for y = 1, 33 do for x = 1, 16 do
+    local a, b = out[(y - 1) * 33 + x], out[(y - 1) * 33 + (34 - x)]
+    if a.a > 0 and b.a > 0 then equal(byKey[Light.rgbKey(a)], byKey[Light.rgbKey(b)], "mirror at " .. x .. "," .. y) end
+  end end
+end)
+
+test("Glossy follows the point light: the highlight moves with the light", function()
+  local function centroid(lightX)
+    local out, family = pointRender({ x = lightX, y = 0, z = 25, falloff = 0, size = 30 }, { material = "Glossy" })
+    local top = Light.rgbKey(family.colors[5])
+    local sx, n = 0, 0
+    for y = 1, 33 do for x = 1, 33 do
+      local p = out[(y - 1) * 33 + x]
+      if p.a > 0 and Light.rgbKey(p) == top then sx, n = sx + x, n + 1 end
+    end end
+    assert(n > 0, "a highlight exists")
+    return sx / n
+  end
+  assert(centroid(-20) < centroid(53), "highlight follows the light from left to right")
+end)
+
+test("Light view: fit leaves room around the image; zoom keeps the cursor point; pan; reset", function()
+  local view = LightView.new()
+  local t = LightView.transform(view, 200, 100, 20, 10)
+  local w = 20 * t.scale
+  assert(w <= 200 * LightView.FIT + 1e-9 and w > 0, "image does not fill the preview at zoom 1")
+  local cx, cy = LightView.toCel(t, 37, 61)
+  local sx, sy = LightView.toScreen(t, cx, cy)
+  assert(math.abs(sx - 37) < 1e-9 and math.abs(sy - 61) < 1e-9, "transforms are inverse")
+  local px, py = LightView.toCel(t, 150, 20)
+  LightView.zoomAt(view, 200, 100, 20, 10, 150, 20, -2)
+  local t2 = LightView.transform(view, 200, 100, 20, 10)
+  local qx, qy = LightView.toCel(t2, 150, 20)
+  assert(t2.scale > t.scale and math.abs(qx - px) < 1e-9 and math.abs(qy - py) < 1e-9)
+  for _ = 1, 100 do LightView.zoomAt(view, 200, 100, 20, 10, 0, 0, 1) end
+  equal(view.zoom, LightView.MIN_ZOOM, "zoom is clamped")
+  LightView.pan(view, 5, -3)
+  LightView.reset(view)
+  equal(view.zoom, 1); equal(view.panX, 0); equal(view.panY, 0)
+end)
+
+test("Light settings keep the point light; older settings have none and default falloff", function()
+  local old = LightAseprite.normalizeShared({ directionX = -1, directionY = 0, elevation = 30 })
+  equal(old.lightX, nil); equal(old.lightHeight, nil); equal(old.falloff, 30)
+  local new = LightAseprite.normalizeShared({ lightX = -12.5, lightY = 40, lightHeight = 18, falloff = 140 })
+  equal(new.lightX, -12.5); equal(new.lightY, 40); equal(new.lightHeight, 18); equal(new.falloff, 100)
+  equal(LightAseprite.normalizeShared({ lightX = 0 / 0, lightY = 1 }).lightX, nil, "NaN rejected")
 end)
 
 io.write(string.format("\n%d passed, %d failed\n", passed, failed))

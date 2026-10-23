@@ -2,7 +2,8 @@
 -- generation and the real Light engine, run inside Aseprite:
 --   aseprite -b --script-param out=docs/images --script scripts/make_demo.lua
 -- It draws flat objects, shades them exactly as Light does (3 shades), and
--- writes docs/images/light-flat-vs-shaded.png and light-demo.gif.
+-- writes docs/images/light-flat-vs-shaded.png, light-materials.png and
+-- light-demo.gif.
 local sourcePath = debug.getinfo(1, "S").source:gsub("^@", ""):gsub("\\", "/")
 local root = sourcePath:match("^(.*)/scripts/[^/]+$") or "."
 local function load(path) return dofile(root .. "/" .. path) end
@@ -46,13 +47,14 @@ local objects = {
     pixels = draw(function(x, y) return x >= 3 and x <= 38 and y >= 10 and y <= 31 end, GREEN.base) },
 }
 
-local function shade(object, dirX, dirY)
+local function shade(object, dirX, dirY, material, levels)
   local mask, key = Engine.extractSilhouette(object.pixels, SIZE, SIZE)
   local geometry = Engine.buildGeometry(mask, SIZE, SIZE, object.params, {}, key)
   local len = math.sqrt(dirX * dirX + dirY * dirY)
-  local output = Engine.render(object.pixels, SIZE, SIZE, families, geometry, {
-    levels = 3, directionX = dirX / len, directionY = dirY / len, elevation = 38, strength = 1.15,
-    matchShades = true,
+  local fams = levels == 5 and model.shadeFamilies(model, 5) or families
+  local output = Engine.render(object.pixels, SIZE, SIZE, fams, geometry, {
+    levels = levels or 3, directionX = dirX / len, directionY = dirY / len, elevation = 38, strength = 1.15,
+    matchShades = true, material = material or "Matte",
   })
   return output
 end
@@ -81,7 +83,11 @@ local function compose(pixelSets, cols, gap)
 end
 
 local function flatSets() local t = {}; for i, o in ipairs(objects) do t[i] = o.pixels end; return t end
-local function shadedSets(dx, dy) local t = {}; for i, o in ipairs(objects) do t[i] = shade(o, dx, dy) end; return t end
+local function shadedSets(dx, dy, material, levels)
+  local t = {}
+  for i, o in ipairs(objects) do t[i] = shade(o, dx, dy, material, levels) end
+  return t
+end
 
 -- 1. Flat (top row) vs shaded (bottom row), same canvas.
 do
@@ -91,6 +97,54 @@ do
   local sprite = Sprite(image.width, image.height, ColorMode.RGB)
   sprite.cels[1].image = image
   sprite:saveAs(app.fs.joinPath(outDir, "light-flat-vs-shaded.png"))
+end
+
+-- 1b. Materials: Matte (top row) vs Glossy (bottom row), 5 shades.
+do
+  local sets = shadedSets(-0.7, 0.7, "Matte", 5)
+  for _, px in ipairs(shadedSets(-0.7, 0.7, "Glossy", 5)) do sets[#sets + 1] = px end
+  local image = compose(sets, 3, 4)
+  local sprite = Sprite(image.width, image.height, ColorMode.RGB)
+  sprite.cels[1].image = image
+  sprite:saveAs(app.fs.joinPath(outDir, "light-materials.png"))
+end
+
+-- 1c. Point light distance: same sphere and direction, light near / mid / far
+-- (5 shades, falloff 40%). The yellow square marks the light.
+do
+  local PANEL, scale = 96, 3
+  local sphere = objects[1]
+  local mask, key = Engine.extractSilhouette(sphere.pixels, SIZE, SIZE)
+  local geometry = Engine.buildGeometry(mask, SIZE, SIZE, sphere.params, {}, key)
+  local fams = model.shadeFamilies(model, 5)
+  local distances = { 4, 22, 46 }
+  local image = Image(PANEL * scale * #distances + (#distances + 1) * 6 * scale, PANEL * scale + 12 * scale, ColorMode.RGB)
+  image:clear(pc.rgba(BG.r, BG.g, BG.b, 255))
+  for index, d in ipairs(distances) do
+    -- Object occupies cel coordinates 0..39; the light goes up-left of it.
+    local lightX, lightY = 20.5 - (17 + d) * 0.7071, 20.5 - (17 + d) * 0.7071
+    local output = Engine.render(sphere.pixels, SIZE, SIZE, fams, geometry, {
+      levels = 5, strength = 1.15, matchShades = true,
+      pointLight = { x = lightX, y = lightY, z = 14, falloff = 0.4, size = 34 },
+    })
+    local ox = (6 + (index - 1) * (PANEL + 6)) * scale
+    local oy = 6 * scale
+    local offset = PANEL - SIZE - 4   -- object sits at the panel's bottom-right
+    local function plot(cx, cy, value)
+      local px, py = cx + offset, cy + offset
+      if px >= 0 and py >= 0 and px < PANEL and py < PANEL then
+        for dy = 0, scale - 1 do for dx = 0, scale - 1 do image:drawPixel(ox + px * scale + dx, oy + py * scale + dy, value) end end
+      end
+    end
+    for y = 0, SIZE - 1 do for x = 0, SIZE - 1 do
+      local p = output[y * SIZE + x + 1]
+      if p.a > 0 then plot(x, y, pc.rgba(p.r, p.g, p.b, 255)) end
+    end end
+    for dy = -2, 2 do for dx = -2, 2 do plot(math.floor(lightX) + dx, math.floor(lightY) + dy, pc.rgba(246, 224, 109, 255)) end end
+  end
+  local sprite = Sprite(image.width, image.height, ColorMode.RGB)
+  sprite.cels[1].image = image
+  sprite:saveAs(app.fs.joinPath(outDir, "light-distance.png"))
 end
 
 -- 2. GIF: flat, then the light orbits the objects.

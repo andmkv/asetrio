@@ -340,6 +340,31 @@ function Engine.quantize(intensity, levels, dither, x, y)
   return (fraction >= 0.5) and (low + 2) or (low + 1)
 end
 
+-- Materials. "Matte" is plain diffuse lighting (the original Light model).
+-- "Glossy" gives the diffuse body more contrast but keeps it below the top
+-- shade, and adds a Blinn-Phong highlight: its core alone reaches the top
+-- shade (LIGHT with 3 shades, BRIGHT with 5) and, with 5 shades, a halo lifts
+-- the surrounding pixels to LIGHT. The highlight is never dithered.
+Engine.MATERIALS = { "Matte", "Glossy" }
+Engine.GLOSS_SHININESS = 16
+-- Highlight cut-offs are relative to the strongest specular value on the
+-- layer, so every glossy object shows its highlight where it naturally falls
+-- (a spot on a sphere, a band on a cylinder, the lit edge of a bevel).
+Engine.GLOSS_CORE = 0.5      -- fraction of the peak that reaches the top shade
+Engine.GLOSS_HALO = 0.2      -- fraction of the peak that reaches the shade below
+Engine.GLOSS_MIN_PEAK = 0.05 -- below this the light never glances off: no highlight
+Engine.GLOSS_CONTRAST = 1.25 -- extra body contrast for glossy surfaces
+
+-- Returns the specular term for a normal and a light vector (viewer is +Z).
+function Engine.specular(nx, ny, nz, lightX, lightY, lightZ, shininess)
+  local hx, hy, hz = lightX, lightY, lightZ + 1
+  local length = math.sqrt(hx * hx + hy * hy + hz * hz)
+  if length < 1e-12 then return 0 end
+  local dot = (nx * hx + ny * hy + nz * hz) / length
+  if dot <= 0 then return 0 end
+  return dot ^ (shininess or Engine.GLOSS_SHININESS)
+end
+
 -- Maps color keys to families. Bases win over shades; earlier families win
 -- over later ones. With matchShades, every shade of a family (family.allColors
 -- or family.colors) also identifies it, so art painted with Palette Trio
@@ -417,6 +442,44 @@ function Engine.resolveColor(color, families, toLab, maxDistance)
   return nil, nil, firstD
 end
 
+-- Point light: a light at a position (cel pixel coordinates, y down) and a
+-- height above the image plane. Each pixel gets its own light vector, so the
+-- angle changes across the object and with distance. Falloff dims the light
+-- with distance relative to a reference distance of 1.5 x the object size:
+-- at that distance brightness is unchanged, farther is dimmer, closer is
+-- brighter (capped). falloff = 0 disables it.
+Engine.FALLOFF_REFERENCE = 1.5
+Engine.FALLOFF_STRENGTH = 3
+Engine.FALLOFF_MAX_GAIN = 1.6
+
+function Engine.pointLightAt(light, px, py)
+  local dx = light.x - (px + 0.5)
+  local dy = (py + 0.5) - light.y
+  local dz = math.max(0.5, light.z or 1)
+  local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+  local attenuation = 1
+  local falloff = clamp(tonumber(light.falloff) or 0, 0, 1)
+  if falloff > 0 then
+    local size = math.max(1, light.size or 1)
+    local k = falloff * Engine.FALLOFF_STRENGTH
+    local reference = Engine.FALLOFF_REFERENCE
+    local relative = distance / size
+    attenuation = math.min(Engine.FALLOFF_MAX_GAIN,
+      (1 + k * reference * reference) / (1 + k * relative * relative))
+  end
+  return dx / distance, dy / distance, dz / distance, attenuation
+end
+
+-- Converts a directional light (2D direction + elevation) into an equivalent
+-- point-light position relative to a center, at the given height.
+function Engine.pointFromDirection(directionX, directionY, elevationDegrees, centerX, centerY, height)
+  local lx, ly, lz = Engine.lightVector(directionX, directionY, elevationDegrees)
+  local planar = math.sqrt(lx * lx + ly * ly)
+  local distance = planar > 1e-9 and height * planar / lz or 0
+  local nx, ny = planar > 1e-9 and lx / planar or 0, planar > 1e-9 and ly / planar or 0
+  return centerX + nx * distance, centerY - ny * distance
+end
+
 -- options.matchShades: shade colors identify their family (see familyIndex).
 -- options.fallbackFamily: index of the family used for opaque pixels that
 -- match no family (an explicit artist choice); nil leaves them unchanged.
@@ -428,6 +491,29 @@ function Engine.render(pixels, width, height, families, geometry, options)
   local offsetX, offsetY = tonumber(options.offsetX) or 0, tonumber(options.offsetY) or 0
   local excluded = {}
   for _, color in ipairs(options.excludedColors or {}) do excluded[rgbKey(color)] = true end
+  local glossy = options.material == "Glossy"
+  local point = options.pointLight
+  -- Light vector and attenuation for a pixel (0-based coordinates).
+  local function lightFor(px, py)
+    if point then return Engine.pointLightAt(point, px, py) end
+    return lightX, lightY, lightZ, 1
+  end
+  local coreCut, haloCut = math.huge, math.huge
+  if glossy then
+    local peak = 0
+    for i = 1, width * height do
+      local p = pixels[i]
+      if p and (p.a or 0) > 0 then
+        local lx, ly, lz, attenuation = lightFor((i - 1) % width, (i - 1) // width)
+        local spec = attenuation * Engine.specular(geometry.normals.x[i] or 0, geometry.normals.y[i] or 0,
+          geometry.normals.z[i] or 1, lx, ly, lz)
+        if spec > peak then peak = spec end
+      end
+    end
+    if peak >= Engine.GLOSS_MIN_PEAK then
+      coreCut, haloCut = peak * Engine.GLOSS_CORE, peak * Engine.GLOSS_HALO
+    end
+  end
   local map, duplicateBases = Engine.familyIndex(families, options.matchShades)
   local fallback = options.fallbackFamily and families[options.fallbackFamily] or nil
   local output = {}
@@ -457,10 +543,27 @@ function Engine.render(pixels, width, height, families, geometry, options)
         local nx = geometry.normals.x[index] or 0
         local ny = geometry.normals.y[index] or 0
         local nz = geometry.normals.z[index] or 1
-        local dot = math.max(0, nx * lightX + ny * lightY + nz * lightZ)
-        local diffuse = 0.18 + 0.82 * dot
+        local lx, ly, lz, attenuation = lightFor(x - 1, y - 1)
+        local dot = math.max(0, nx * lx + ny * ly + nz * lz)
+        local diffuse = 0.18 + 0.82 * math.min(1, dot * attenuation)
         local intensity = clamp(0.5 + (diffuse - 0.5) * contrast, 0, 1)
-        local paletteIndex = Engine.quantize(intensity, levels, options.dither, x - 1 + offsetX, y - 1 + offsetY)
+        local paletteIndex
+        if glossy then
+          local spec = attenuation * Engine.specular(nx, ny, nz, lx, ly, lz)
+          if spec >= coreCut then
+            paletteIndex = levels
+            stats.highlights = (stats.highlights or 0) + 1
+          else
+            local body = clamp(0.5 + (diffuse - 0.5) * contrast * Engine.GLOSS_CONTRAST, 0, 1)
+            -- The body never reaches the top shade, even when dithered:
+            -- only the highlight may use it.
+            paletteIndex = math.min(levels - 1,
+              Engine.quantize(body, levels, options.dither, x - 1 + offsetX, y - 1 + offsetY))
+            if levels == 5 and spec >= haloCut then paletteIndex = math.max(paletteIndex, levels - 1) end
+          end
+        else
+          paletteIndex = Engine.quantize(intensity, levels, options.dither, x - 1 + offsetX, y - 1 + offsetY)
+        end
         local selected = family.colors[paletteIndex]
         if selected then
           output[index] = { r = selected.r, g = selected.g, b = selected.b, a = alpha }

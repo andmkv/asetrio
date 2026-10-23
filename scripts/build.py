@@ -23,6 +23,7 @@ FILES = [
     Path("src/about.lua"),
     Path("src/light_engine.lua"),
     Path("src/light_aseprite.lua"),
+    Path("src/light_view.lua"),
     Path("src/light_ui.lua"),
 ]
 

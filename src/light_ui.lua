@@ -2,12 +2,52 @@ local UI = {}
 
 local PREVIEW_WIDTH, PREVIEW_HEIGHT = 224, 150
 
-local SHAPES = {
-  "Round / Sphere",
-  "Box / Beveled rectangle",
-  "Cylinder",
-  "Contour / Auto Relief",
+-- Shape list shown in the dialog. Cylinder orientation is part of the shape,
+-- so there is no separate Axis row. Stored layer values stay the same.
+local SHAPE_OPTIONS = {
+  { label = "Sphere", shape = "Round / Sphere" },
+  { label = "Box (bevel)", shape = "Box / Beveled rectangle" },
+  { label = "Cylinder (horizontal)", shape = "Cylinder", axis = "Horizontal" },
+  { label = "Cylinder (vertical)", shape = "Cylinder", axis = "Vertical" },
+  { label = "Contour", shape = "Contour / Auto Relief" },
 }
+UI.SHAPE_OPTIONS = SHAPE_OPTIONS
+
+local function shapeLabels()
+  local labels = {}
+  for i, option in ipairs(SHAPE_OPTIONS) do labels[i] = option.label end
+  return labels
+end
+
+function UI.shapeLabel(layer)
+  for _, option in ipairs(SHAPE_OPTIONS) do
+    if option.shape == layer.shape and (not option.axis or option.axis == layer.cylinderAxis) then return option.label end
+  end
+  return SHAPE_OPTIONS[1].label
+end
+
+-- Applies a shape label to layer settings. Returns true if the shape changed.
+function UI.applyShapeLabel(layer, label)
+  for _, option in ipairs(SHAPE_OPTIONS) do
+    if option.label == label then
+      local changed = layer.shape ~= option.shape or (option.axis ~= nil and layer.cylinderAxis ~= option.axis)
+      layer.shape = option.shape
+      if option.axis then layer.cylinderAxis = option.axis end
+      return changed
+    end
+  end
+  return false
+end
+
+-- One "Form" slider: bevel width for Box, curvature (%) for Cylinder and
+-- Contour, unused for Sphere.
+function UI.formRange(layer)
+  if layer.shape == "Box / Beveled rectangle" then return 1, 24, math.floor(layer.bevel + 0.5), true end
+  if layer.shape == "Cylinder" or layer.shape == "Contour / Auto Relief" then
+    return 25, 300, math.floor(layer.curvature * 100 + 0.5), true
+  end
+  return 0, 100, 0, false
+end
 
 local function clamp(value, low, high)
   return math.max(low, math.min(high, value))
@@ -88,39 +128,13 @@ local function selectedRecord(ctx, records)
   return records[1]
 end
 
-local AUTO_FAMILY = "Auto (detect)"
-UI.AUTO_FAMILY = AUTO_FAMILY
-
-local function hexOf(c)
-  return string.format("#%02X%02X%02X", c.r, c.g, c.b)
-end
-
--- Family combobox labels have a constant width ("12 #RRGGBB") so updating
--- the options never changes the dialog layout.
-function UI.familyOptions(model)
-  local options, labelToRow, rowToLabel = { AUTO_FAMILY }, {}, {}
-  for i, row in ipairs(model.rows) do
-    local label = string.format("%d %s", i, hexOf(row.base))
-    options[#options + 1] = label
-    labelToRow[label], rowToLabel[row.id] = row.id, label
-  end
-  return options, labelToRow, rowToLabel
-end
-
-local function familyLabel(ctx)
-  local rowId = ctx.light.layer and ctx.light.layer.familyRowId
-  return (rowId and ctx.light.rowToLabel and ctx.light.rowToLabel[rowId]) or AUTO_FAMILY
-end
-
-local function refreshFamilyOptions(ctx)
-  local options, labelToRow, rowToLabel = UI.familyOptions(ctx.model)
-  local joined = table.concat(options, "|")
-  ctx.light.labelToRow, ctx.light.rowToLabel = labelToRow, rowToLabel
-  if ctx.lightDialog and joined ~= ctx.light.familyOptionsKey then
-    ctx.light.familyOptionsKey = joined
-    pcall(function() ctx.lightDialog:modify { id = "family", options = options, option = familyLabel(ctx) } end)
-  end
-  return options
+local function updateFamilyControls(ctx)
+  local dlg = ctx.lightDialog
+  if not dlg then return end
+  pcall(function()
+    dlg:modify { id = "autoFamily", enabled = ctx.light.layer and ctx.light.layer.familyRowId ~= nil }
+  end)
+  dlg:repaint()
 end
 
 local function updateDialogData(ctx, preserveExcludedText)
@@ -129,47 +143,49 @@ local function updateDialogData(ctx, preserveExcludedText)
   local shared, layer = ctx.light.shared, ctx.light.layer
   local data = dlg.data
   data.sourceLayer = ctx.light.sourceOption or data.sourceLayer
-  data.shape = layer.shape
-  data.cylinderAxis = layer.cylinderAxis
-  data.bevel = math.floor(layer.bevel + 0.5)
-  data.curvature = math.floor(layer.curvature * 100 + 0.5)
+  data.shape = UI.shapeLabel(layer)
+  data.material = layer.material
   if not preserveExcludedText then
     data.excludedColors = formatExcluded(layer.excludedColors)
   end
-  data.lightElevation = math.floor(shared.elevation + 0.5)
+  data.lightHeight = math.floor((shared.lightHeight or 32) + 0.5)
+  data.falloff = math.floor(shared.falloff + 0.5)
   data.lightStrength = math.floor(shared.strength * 100 + 0.5)
   data.levels = tostring(shared.levels)
-  data.dither = shared.dither
+  data.dither = shared.dither == "Off" and "No dither" or shared.dither
   data.preserveOutlines = shared.preserveOutlines
   data.separateComponents = shared.separateComponents
-  data.family = familyLabel(ctx)
   dlg.data = data
   -- enabled (not visible) toggles: changing visibility forces a relayout,
   -- which Aseprite 1.3.17 may not fully redraw (stale "ghost" pixels).
-  dlg:modify { id = "cylinderAxis", enabled = layer.shape == "Cylinder" }
-  dlg:modify { id = "bevel", enabled = layer.shape == "Box / Beveled rectangle" }
-  dlg:modify { id = "curvature", enabled = layer.shape == "Cylinder" or layer.shape == "Contour / Auto Relief" }
+  local min, max, value, enabled = UI.formRange(layer)
+  dlg:modify { id = "form", min = min, max = max, value = value, enabled = enabled }
+  updateFamilyControls(ctx)
 end
 
 local function readDialogSettings(ctx)
   local data = ctx.lightDialog and ctx.lightDialog.data or {}
   local shared, layer = ctx.light.shared, ctx.light.layer
-  shared.elevation = clamp(tonumber(data.lightElevation) or shared.elevation, 1, 89)
+  shared.lightHeight = clamp(tonumber(data.lightHeight) or shared.lightHeight or 32, 1, 4096)
+  shared.falloff = clamp(tonumber(data.falloff) or shared.falloff, 0, 100)
   shared.strength = clamp((tonumber(data.lightStrength) or (shared.strength * 100)) / 100, 0, 2)
   shared.levels = data.levels == "5" and 5 or 3
   if data.dither == "Bayer 2x2" or data.dither == "Bayer 4x4" then shared.dither = data.dither else shared.dither = "Off" end
   shared.preserveOutlines = data.preserveOutlines == true
   shared.separateComponents = data.separateComponents == true
-  if data.shape == "Box / Beveled rectangle" or data.shape == "Cylinder"
-    or data.shape == "Contour / Auto Relief" then layer.shape = data.shape
-  else layer.shape = SHAPES[1] end
-  layer.cylinderAxis = data.cylinderAxis == "Vertical" and "Vertical" or "Horizontal"
-  layer.bevel = clamp(tonumber(data.bevel) or layer.bevel, 1, 64)
-  layer.curvature = clamp((tonumber(data.curvature) or (layer.curvature * 100)) / 100, 0.25, 3)
-  layer.excludedColors = parseExcluded(data.excludedColors)
-  if data.family ~= nil then
-    layer.familyRowId = (ctx.light.labelToRow or {})[data.family]
+  local shapeChanged = data.shape ~= nil and UI.applyShapeLabel(layer, data.shape)
+  layer.material = data.material == "Glossy" and "Glossy" or "Matte"
+  -- The Form slider means bevel or curvature depending on the shape; after a
+  -- shape change its old value belongs to the previous meaning.
+  local form = tonumber(data.form)
+  if form and not shapeChanged then
+    if layer.shape == "Box / Beveled rectangle" then
+      layer.bevel = clamp(form, 1, 64)
+    elseif layer.shape == "Cylinder" or layer.shape == "Contour / Auto Relief" then
+      layer.curvature = clamp(form / 100, 0.25, 3)
+    end
   end
+  layer.excludedColors = parseExcluded(data.excludedColors)
 end
 
 local function saveSettings(ctx)
@@ -204,33 +220,56 @@ local function selectSource(ctx, persist)
   return ctx.light.sourceRecord ~= nil
 end
 
-local function updateLightDirection(ctx, x, y)
-  local info = ctx.light.previewBounds
-  if not info then return end
-  local radius = math.max(1, math.min(info.width, info.height) * 0.48)
-  local dx = (x - info.centerX) / radius
-  local dy = (info.centerY - y) / radius
-  local distance = math.sqrt(dx * dx + dy * dy)
-  if distance > 1 then dx, dy = dx / distance, dy / distance end
-  if math.sqrt(dx * dx + dy * dy) < 0.08 then dx, dy = -0.65, -0.45 end
-  local length = math.sqrt(dx * dx + dy * dy)
-  ctx.light.shared.directionX, ctx.light.shared.directionY = dx / length, dy / length
+-- Bounding box of the opaque pixels of a cel (cel-local), or nil if empty.
+function UI.objectBounds(data)
+  local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+  for y = 0, data.height - 1 do
+    for x = 0, data.width - 1 do
+      local p = data.pixels[y * data.width + x + 1]
+      if p and (p.a or 0) > 0 then
+        if x < minX then minX = x end
+        if x > maxX then maxX = x end
+        if y < minY then minY = y end
+        if y > maxY then maxY = y end
+      end
+    end
+  end
+  if minX == math.huge then return nil end
+  return { x = minX, y = minY, width = maxX - minX + 1, height = maxY - minY + 1,
+    centerX = (minX + maxX + 1) / 2, centerY = (minY + maxY + 1) / 2,
+    size = math.max(maxX - minX + 1, maxY - minY + 1) }
+end
+
+-- First use: place the point light where the old direction/elevation pointed,
+-- at a height equal to the object size, so existing settings look the same.
+local function ensureLight(ctx, data, celX, celY)
+  local shared = ctx.light.shared
+  if shared.lightX and shared.lightY and shared.lightHeight then return end
+  local bounds = UI.objectBounds(data) or { centerX = data.width / 2, centerY = data.height / 2,
+    size = math.max(data.width, data.height) }
+  shared.lightHeight = shared.lightHeight or math.max(4, math.floor(bounds.size + 0.5))
+  local lx, ly = ctx.lightEngine.pointFromDirection(shared.directionX, shared.directionY, shared.elevation,
+    bounds.centerX, bounds.centerY, shared.lightHeight)
+  shared.lightX, shared.lightY = math.floor(celX + lx + 0.5), math.floor(celY + ly + 0.5)
+  updateDialogData(ctx, true)
+end
+
+-- Moves the light to a preview point (stored in sprite coordinates).
+local function moveLightTo(ctx, sx, sy)
+  local t, source = ctx.light.viewT, ctx.light.previewSource
+  if not t or not source then return end
+  local cx, cy = ctx.lightView.toCel(t, sx, sy)
+  ctx.light.shared.lightX = math.floor(source.position.x + cx + 0.5)
+  ctx.light.shared.lightY = math.floor(source.position.y + cy + 0.5)
   UI.regeneratePreview(ctx)
 end
 
 local function drawPreview(ctx, ev)
   local gc = ev.context
   local width, height = gc.width, gc.height
+  ctx.light.canvasW, ctx.light.canvasH = width, height
   gc.color = Color { r = 44, g = 44, b = 48 }
   gc:fillRect(Rectangle(0, 0, width, height))
-  for y = 0, height, 12 do
-    for x = 0, width, 12 do
-      if ((math.floor(x / 12) + math.floor(y / 12)) % 2) == 0 then
-        gc.color = Color { r = 58, g = 58, b = 63 }
-        gc:fillRect(Rectangle(x, y, 12, 12))
-      end
-    end
-  end
   local image = ctx.light.previewImage
   if not image then
     gc.color = Color { r = 220, g = 220, b = 220 }
@@ -238,38 +277,64 @@ local function drawPreview(ctx, ev)
     for i, line in ipairs(wrapText(gc, message, width - 20)) do
       gc:fillText(line, 10, 10 + (i - 1) * 13)
     end
-    ctx.light.previewBounds = nil
+    ctx.light.viewT = nil
     return
   end
-  local fit = math.min((width - 24) / image.width, (height - 24) / image.height)
-  local scale = fit >= 1 and math.max(1, math.floor(fit)) or fit
-  local drawWidth = math.max(1, image.width * scale)
-  local drawHeight = math.max(1, image.height * scale)
-  local drawX, drawY = (width - drawWidth) / 2, (height - drawHeight) / 2
+  local View = ctx.lightView
+  local t = View.transform(ctx.light.view, width, height, image.width, image.height)
+  ctx.light.viewT = t
+  local drawW, drawH = image.width * t.scale, image.height * t.scale
+  -- Checkerboard only under the cel, so the cel's extent is visible.
+  local tile = math.max(4, math.floor(t.scale * 4))
+  gc:save()
+  pcall(function()
+    gc:beginPath()
+    gc:rect(Rectangle(t.originX, t.originY, drawW, drawH))
+    gc:clip()
+  end)
+  for y = math.floor(t.originY), t.originY + drawH, tile do
+    for x = math.floor(t.originX), t.originX + drawW, tile do
+      if ((math.floor((x - t.originX) / tile) + math.floor((y - t.originY) / tile)) % 2) == 0 then
+        gc.color = Color { r = 58, g = 58, b = 63 }
+        gc:fillRect(Rectangle(x, y, tile, tile))
+      end
+    end
+  end
+  gc:restore()
   gc:save()
   gc.opacity = clamp(tonumber(ctx.light.previewSource and ctx.light.previewSource.opacity) or 255, 0, 255)
-  gc:drawImage(image, 0, 0, image.width, image.height, drawX, drawY, drawWidth, drawHeight)
+  gc:drawImage(image, 0, 0, image.width, image.height, t.originX, t.originY, drawW, drawH)
   gc:restore()
-  local radius = math.max(6, math.min(drawWidth, drawHeight) * 0.48)
-  local centerX, centerY = drawX + drawWidth / 2, drawY + drawHeight / 2
-  local markerX = centerX + ctx.light.shared.directionX * radius
-  local markerY = centerY - ctx.light.shared.directionY * radius
-  gc.color = Color { r = 246, g = 224, b = 109 }
-  gc.strokeWidth = 1
-  gc:beginPath()
-  gc:moveTo(centerX, centerY)
-  gc:lineTo(markerX, markerY)
-  gc:stroke()
-  gc:beginPath()
-  gc:roundedRect(Rectangle(centerX - radius, centerY - radius, radius * 2, radius * 2), radius)
-  gc:stroke()
-  gc:fillRect(Rectangle(markerX - 5, markerY - 5, 10, 10))
-  ctx.light.previewBounds = {
-    x = drawX, y = drawY, width = drawWidth, height = drawHeight,
-    centerX = centerX, centerY = centerY, scale = scale,
-    imageWidth = image.width, imageHeight = image.height,
-  }
-  -- Family strip: the colors Light will use (chosen or detected family).
+
+  -- Light marker (a sun) with a guide line to the object's center. When the
+  -- light is outside the view, the marker sits on the edge, hollow.
+  local shared, source = ctx.light.shared, ctx.light.previewSource
+  if shared.lightX and source then
+    local bounds = ctx.light.objectBounds
+    local ox, oy = bounds and bounds.centerX or image.width / 2, bounds and bounds.centerY or image.height / 2
+    local cx, cy = View.toScreen(t, ox, oy)
+    local mx, my = View.toScreen(t, shared.lightX - source.position.x + 0.5, shared.lightY - source.position.y + 0.5)
+    local inside = mx >= 0 and my >= 0 and mx <= width and my <= height
+    local ex, ey = clamp(mx, 6, width - 6), clamp(my, 6, height - 6)
+    local yellow = Color { r = 246, g = 224, b = 109 }
+    gc.strokeWidth = 1
+    gc.color = yellow
+    gc:beginPath()
+    gc:moveTo(cx, cy)
+    gc:lineTo(ex, ey)
+    gc:stroke()
+    gc.color = Color { r = 30, g = 24, b = 20 }
+    gc:fillRect(Rectangle(ex - 5, ey - 5, 11, 11))
+    gc.color = yellow
+    if inside then
+      gc:fillRect(Rectangle(ex - 4, ey - 4, 9, 9))
+    else
+      gc:strokeRect(Rectangle(ex - 4, ey - 4, 9, 9))
+    end
+    gc:fillRect(Rectangle(ex, ey - 8, 1, 3)); gc:fillRect(Rectangle(ex, ey + 6, 1, 3))
+    gc:fillRect(Rectangle(ex - 8, ey, 3, 1)); gc:fillRect(Rectangle(ex + 6, ey, 3, 1))
+  end
+  -- Family strip in the top-left corner: the colors Light will use.
   local family = ctx.light.activeFamily
   if family then
     local cell = 8
@@ -279,20 +344,25 @@ local function drawPreview(ctx, ev)
     end
     gc.color = Color { r = 0, g = 0, b = 0 }
     gc:strokeRect(Rectangle(3, 3, #family.colors * cell + 2, cell + 2))
+    gc.color = Color { r = 200, g = 200, b = 205 }
+    gc:fillText(ctx.light.layer.familyRowId and "picked" or "auto", 8 + #family.colors * cell, 3)
   end
+  gc.color = Color { r = 150, g = 150, b = 155 }
   if ctx.light.picking then
     gc.color = Color { r = 246, g = 224, b = 109 }
     gc:strokeRect(Rectangle(0, 0, width, height))
-    gc:fillText("Click the object to pick its family", 4, height - 14)
+    gc:fillText("Click the object to pick its family", 4, height - 12)
+  else
+    gc:fillText("Drag: light  Wheel: zoom  Alt+drag: pan", 4, height - 12)
   end
 end
 
 -- Maps a preview point to the source pixel shown there, or nil.
 function UI.previewPixel(ctx, x, y)
-  local info, source = ctx.light.previewBounds, ctx.light.previewSource
-  if not info or not source then return nil end
-  local px = math.floor((x - info.x) / info.scale)
-  local py = math.floor((y - info.y) / info.scale)
+  local t, source = ctx.light.viewT, ctx.light.previewSource
+  if not t or not source then return nil end
+  local cx, cy = ctx.lightView.toCel(t, x, y)
+  local px, py = math.floor(cx), math.floor(cy)
   if px < 0 or py < 0 or px >= source.width or py >= source.height then return nil end
   return source.pixels[py * source.width + px + 1]
 end
@@ -312,15 +382,14 @@ function UI.pickAt(ctx, x, y)
   local index, how = ctx.lightEngine.resolveColor(pixel, families, ctx.color.rgbToOklab)
   if not index then
     UI.regeneratePreview(ctx)
-    setStatus(ctx, hexOf(pixel) .. " is not a Palette Trio color")
+    setStatus(ctx, "That color is not in any family")
     return false
   end
   ctx.light.layer.familyRowId = families[index].rowId
-  refreshFamilyOptions(ctx)
   updateDialogData(ctx, true)
   saveSettings(ctx)
   UI.regeneratePreview(ctx)
-  setStatus(ctx, string.format("Picked family %d%s", index, how == "near" and " (closest match)" or ""))
+  setStatus(ctx, how == "near" and "Picked the closest family" or "Picked this family")
   return true
 end
 
@@ -369,7 +438,11 @@ function UI.regeneratePreview(ctx)
   end
   local geometry, cacheHit = ctx.lightEngine.buildGeometry(
     cache.mask, data.width, data.height, ctx.light.layer, cache, maskKey)
-  refreshFamilyOptions(ctx)
+  if cache.boundsKey ~= maskKey then
+    cache.bounds, cache.boundsKey = UI.objectBounds(data), maskKey
+  end
+  ctx.light.objectBounds = cache.bounds
+  ensureLight(ctx, data, source.cel.position.x, source.cel.position.y)
   local detection = ctx.lightEngine.detectFamily(data.pixels, familySnapshot, ctx.light.layer.excludedColors)
   ctx.light.detection = detection
   local chosen = nil
@@ -384,6 +457,7 @@ function UI.regeneratePreview(ctx)
   local options = {
     matchShades = true,
     fallbackFamily = chosen,
+    material = ctx.light.layer.material,
     levels = ctx.light.shared.levels,
     directionX = ctx.light.shared.directionX,
     directionY = ctx.light.shared.directionY,
@@ -394,6 +468,13 @@ function UI.regeneratePreview(ctx)
     excludedColors = ctx.light.layer.excludedColors,
     offsetX = source.cel.position.x,
     offsetY = source.cel.position.y,
+    pointLight = {
+      x = ctx.light.shared.lightX - source.cel.position.x,
+      y = ctx.light.shared.lightY - source.cel.position.y,
+      z = ctx.light.shared.lightHeight,
+      falloff = ctx.light.shared.falloff / 100,
+      size = cache.bounds and cache.bounds.size or math.max(data.width, data.height),
+    },
   }
   local output, stats = ctx.lightEngine.render(data.pixels, data.width, data.height, familySnapshot, geometry, options)
   ctx.light.previewImage = ctx.lightAseprite.makeImage(data.width, data.height, output)
@@ -402,19 +483,16 @@ function UI.regeneratePreview(ctx)
   ctx.light.previewFrameNumber = frameNumber
   ctx.light.sprite = sprite
   local _ = cacheHit
+  local fromOriginal = ctx.light.usingSnapshot and " · from original" or ""
   if stats.shaded == 0 then
-    setStatus(ctx, "No family found · use Pick", "This layer has no Palette Trio colors. Click Pick and then the object, or choose a Family, to shade it with that family.")
-  elseif not chosen and detection.index then
-    setStatus(ctx, string.format("Auto: family %d (%d%%) · %d px",
-      detection.index, math.floor(detection.share * 100 + 0.5), stats.shaded))
+    setStatus(ctx, "No family found · use Pick", "This layer has no Palette Trio colors. Click Pick and then the object to shade it with that family.")
   elseif chosen then
-    setStatus(ctx, string.format("Family %d · %d px shaded%s", chosen, stats.shaded,
-      ctx.light.usingSnapshot and " · from original" or ""))
+    setStatus(ctx, string.format("Picked family · %d px shaded%s", stats.shaded, fromOriginal))
   else
-    setStatus(ctx, string.format("Frame %d · %d px shaded · %d kept%s%s",
-      frameNumber, stats.shaded, stats.unchanged, stats.duplicateBases > 0 and " · dup. bases" or "",
-      ctx.light.usingSnapshot and " · from original" or ""))
+    setStatus(ctx, string.format("Auto family (%d%%) · %d px shaded%s",
+      math.floor(detection.share * 100 + 0.5), stats.shaded, fromOriginal))
   end
+  updateFamilyControls(ctx)
   ctx.lightDialog:repaint()
   return true
 end
@@ -548,19 +626,25 @@ local function buildDialog(ctx)
       UI.regeneratePreview(ctx)
     end,
   }
-  dlg:button { id = "refreshLayers", text = "Refresh", onclick = function() UI.reload(ctx) end }
-  dlg:combobox { id = "shape", label = "Shape", options = SHAPES, option = ctx.light.layer.shape, onchange = function() persistAndPreview(ctx) end }
-  dlg:combobox { id = "cylinderAxis", label = "Axis", options = { "Horizontal", "Vertical" }, option = ctx.light.layer.cylinderAxis, onchange = function() persistAndPreview(ctx) end }
-  dlg:slider { id = "bevel", label = "Bevel", min = 1, max = 24, value = math.floor(ctx.light.layer.bevel + 0.5), onchange = previewChange, onrelease = function() persistAndPreview(ctx) end }
-  dlg:slider { id = "curvature", label = "Curvature", min = 25, max = 300, value = math.floor(ctx.light.layer.curvature * 100 + 0.5), onchange = previewChange, onrelease = function() persistAndPreview(ctx) end }
-  dlg:combobox { id = "family", label = "Family", options = refreshFamilyOptions(ctx), option = familyLabel(ctx),
+  -- Shape and Material share a row: their options explain themselves.
+  dlg:combobox { id = "shape", label = "Shape", options = shapeLabels(), option = UI.shapeLabel(ctx.light.layer),
     onchange = function() persistAndPreview(ctx) end }
-  dlg:button { id = "pick", text = "Pick", onclick = function()
+  dlg:combobox { id = "material", options = ctx.lightEngine.MATERIALS, option = ctx.light.layer.material,
+    onchange = function() persistAndPreview(ctx) end }
+  local formMin, formMax, formValue, formEnabled = UI.formRange(ctx.light.layer)
+  dlg:slider { id = "form", label = "Form", min = formMin, max = formMax, value = formValue, enabled = formEnabled,
+    onchange = previewChange, onrelease = function() persistAndPreview(ctx) end }
+  dlg:button { id = "pick", label = "Family", text = "Pick", onclick = function()
     ctx.light.picking = not ctx.light.picking
     dlg:modify { id = "pick", text = ctx.light.picking and "Picking..." or "Pick" }
     pcall(function() dlg:modify { id = "lightPreview", mousecursor = ctx.light.picking and MouseCursor.CROSSHAIR or MouseCursor.ARROW } end)
     if ctx.light.picking then setStatus(ctx, "Click the object in the preview") end
     dlg:repaint()
+  end }
+  dlg:button { id = "autoFamily", text = "Auto", onclick = function()
+    ctx.light.layer.familyRowId = nil
+    saveSettings(ctx)
+    UI.regeneratePreview(ctx)
   end }
   dlg:newrow()
   dlg:canvas {
@@ -568,50 +652,85 @@ local function buildDialog(ctx)
     autoscaling = true, hexpand = true, vexpand = true,
     onpaint = function(ev) drawPreview(ctx, ev) end,
     onmousedown = function(ev)
-      -- Pick mode (or right-click): eyedropper. Otherwise drag the light.
+      -- Pick mode (or right-click): eyedropper. Middle or Alt/Shift+drag:
+      -- pan. Otherwise place / drag the light anywhere.
       if (ctx.light.picking and ev.button == MouseButton.LEFT) or ev.button == MouseButton.RIGHT then
         UI.pickAt(ctx, ev.x, ev.y)
         pcall(function() dlg:modify { id = "lightPreview", mousecursor = MouseCursor.ARROW } end)
         return
       end
-      if ev.button == MouseButton.LEFT and ctx.light.previewBounds then
+      if ev.button == MouseButton.MIDDLE or (ev.button == MouseButton.LEFT and (ev.altKey or ev.shiftKey)) then
+        ctx.light.panning = { x = ev.x, y = ev.y }
+        return
+      end
+      if ev.button == MouseButton.LEFT and ctx.light.viewT then
+        ctx.light.beforeDrag = { x = ctx.light.shared.lightX, y = ctx.light.shared.lightY }
         ctx.light.dragging = true
-        updateLightDirection(ctx, ev.x, ev.y)
+        moveLightTo(ctx, ev.x, ev.y)
       end
     end,
     onmousemove = function(ev)
-      if ctx.light.dragging then updateLightDirection(ctx, ev.x, ev.y) end
+      if ctx.light.panning then
+        ctx.lightView.pan(ctx.light.view, ev.x - ctx.light.panning.x, ev.y - ctx.light.panning.y)
+        ctx.light.panning = { x = ev.x, y = ev.y }
+        dlg:repaint()
+      elseif ctx.light.dragging then
+        moveLightTo(ctx, ev.x, ev.y)
+      end
     end,
     onmouseup = function()
+      ctx.light.panning = nil
       if ctx.light.dragging then
         ctx.light.dragging = false
         saveSettings(ctx)
       end
     end,
+    onwheel = function(ev)
+      local image = ctx.light.previewImage
+      if not image or not ctx.light.viewT then return end
+      local steps = (ev.deltaY or 0) > 0 and 1 or ((ev.deltaY or 0) < 0 and -1 or 0)
+      local gcW = ctx.light.canvasW or PREVIEW_WIDTH
+      local gcH = ctx.light.canvasH or PREVIEW_HEIGHT
+      ctx.lightView.zoomAt(ctx.light.view, gcW, gcH, image.width, image.height, ev.x, ev.y, steps)
+      dlg:repaint()
+    end,
+    ondblclick = function()
+      -- Fit the view; the first click of the double-click does not move the light.
+      if ctx.light.beforeDrag and ctx.light.beforeDrag.x then
+        ctx.light.shared.lightX, ctx.light.shared.lightY = ctx.light.beforeDrag.x, ctx.light.beforeDrag.y
+      end
+      ctx.lightView.reset(ctx.light.view)
+      UI.regeneratePreview(ctx)
+    end,
   }
   dlg:newrow()
   dlg:label { id = "lightStatus", text = "Preparing preview..." }
-  dlg:slider { id = "lightElevation", label = "Elevation", min = 1, max = 89, value = math.floor(ctx.light.shared.elevation + 0.5), onchange = previewChange, onrelease = function() persistAndPreview(ctx) end }
+  dlg:slider { id = "lightHeight", label = "Height", min = 1, max = 256, value = math.floor((ctx.light.shared.lightHeight or 32) + 0.5), onchange = previewChange, onrelease = function() persistAndPreview(ctx) end }
+  dlg:slider { id = "falloff", label = "Falloff", min = 0, max = 100, value = math.floor(ctx.light.shared.falloff + 0.5), onchange = previewChange, onrelease = function() persistAndPreview(ctx) end }
   dlg:slider { id = "lightStrength", label = "Contrast", min = 0, max = 200, value = math.floor(ctx.light.shared.strength * 100 + 0.5), onchange = previewChange, onrelease = function() persistAndPreview(ctx) end }
   dlg:combobox { id = "levels", label = "Shades", options = { "3", "5" }, option = tostring(ctx.light.shared.levels), onchange = function() persistAndPreview(ctx) end }
-  dlg:combobox { id = "dither", options = { "Off", "Bayer 2x2", "Bayer 4x4" }, option = ctx.light.shared.dither, onchange = function() persistAndPreview(ctx) end }
+  dlg:combobox { id = "dither", options = { "No dither", "Bayer 2x2", "Bayer 4x4" },
+    option = ctx.light.shared.dither == "Off" and "No dither" or ctx.light.shared.dither, onchange = function() persistAndPreview(ctx) end }
   dlg:combobox { id = "output", label = "Output", options = { OUTPUT_NEW, OUTPUT_REPLACE },
     option = ctx.light.outputMode, onchange = function()
       ctx.light.outputMode = dlg.data.output == OUTPUT_REPLACE and OUTPUT_REPLACE or OUTPUT_NEW
       updateApplyButton(ctx)
     end }
-  dlg:check { id = "preserveOutlines", text = "Keep 1-px alpha outlines", selected = ctx.light.shared.preserveOutlines, onclick = function() persistAndPreview(ctx) end }
   dlg:newrow()
-  dlg:check { id = "separateComponents", text = "Shade separate objects separately", selected = ctx.light.shared.separateComponents, onclick = function() persistAndPreview(ctx) end }
+  dlg:check { id = "preserveOutlines", text = "Keep outlines", selected = ctx.light.shared.preserveOutlines, onclick = function() persistAndPreview(ctx) end }
+  dlg:check { id = "separateComponents", text = "Separate objects", selected = ctx.light.shared.separateComponents, onclick = function() persistAndPreview(ctx) end }
   dlg:entry { id = "excludedColors", label = "Keep colors", text = formatExcluded(ctx.light.layer.excludedColors), onchange = function() persistAndPreview(ctx) end }
   dlg:separator()
   dlg:button { id = "applyLight", text = "Apply to new layer", focus = true, onclick = function() applyOutput(ctx) end }
+  dlg:button { id = "refreshLayers", text = "Refresh", onclick = function() UI.reload(ctx) end }
   dlg:button { id = "openPalette", text = "Colors...", onclick = function()
     ctx.ui.open(ctx)
     if ctx.currentSprite and #ctx.model.rows == 0 then ctx.dialogs.openChooser(ctx, "palette") end
   end }
-  dlg:button { id = "closeLight", text = "Close", onclick = function() dlg:close() end }
-  dlg:show { wait = false, bounds = ctx.ui.validBounds(ctx.preferences and ctx.preferences.lightBounds) }
+  -- autoscrollbars: if the window does not fit the screen (or is made
+  -- smaller), Aseprite adds scrollbars instead of cutting controls off.
+  dlg:show { wait = false, autoscrollbars = true,
+    bounds = ctx.ui.validBounds(ctx.preferences and ctx.preferences.lightBounds) }
   updateDialogData(ctx)
   updateApplyButton(ctx)
   UI.regeneratePreview(ctx)
@@ -624,6 +743,7 @@ function UI.open(ctx)
   ctx.light.snapshots = ctx.light.snapshots or {}
   ctx.light.outputMode = ctx.light.outputMode or OUTPUT_NEW
   ctx.light.sourceLayerUuid = ctx.light.sourceLayerUuid or ""
+  ctx.light.view = ctx.light.view or ctx.lightView.new()
   if ctx.lightDialog then
     pcall(function() ctx.lightDialog:show { wait = false } end)
     return

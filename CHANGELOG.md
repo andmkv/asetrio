@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Light: the light is now a **point light**. Click or drag in the preview to place it anywhere, including outside the object; its position sets both direction and distance. **Height** (px) replaces Elevation, and a new **Falloff** slider controls how much the light weakens with distance. The preview can be zoomed (wheel), panned (Alt/Shift/middle-drag) and fitted (double-click). Existing settings are converted to an equivalent light position on first use.
+- Light: compact dialog. Shape and Material share a row, cylinder orientation is part of the Shape list, Bevel/Curvature are one **Form** slider, the two options share a row, Refresh moved to the button row, and scrollbars appear if the dialog does not fit.
+- Light: the **Family** list with HEX codes is gone. The preview shows the active family as a strip of its colors (marked auto or picked), and the Family row has **Pick** and **Auto**.
+- Light: new **Material** option, **Matte** (the original look) or **Glossy**. Glossy adds more body contrast and a crisp specular highlight that is the only part using the brightest shade; it is never dithered, and appears where the light glances off each shape (spot, band or bevel edge). The material is saved per layer. Matte output is unchanged.
+
 ## 0.3.2
 
 - Fixed: choosing **About Palette Trio...** raised "Field link does not exist" in 0.3.1, because Aseprite's script dialogs have no link widget. The two links are now buttons that open the address in your browser (and show the address if the browser cannot be opened).

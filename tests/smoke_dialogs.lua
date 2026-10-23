@@ -13,7 +13,7 @@ local ctx = {
   grid = load("src/grid.lua"), ui = load("src/ui.lua"), dialogs = load("src/dialogs.lua"),
   menu = load("src/menu.lua"), about = load("src/about.lua"),
   lightEngine = load("src/light_engine.lua"), lightAseprite = load("src/light_aseprite.lua"),
-  lightUI = load("src/light_ui.lua"),
+  lightUI = load("src/light_ui.lua"), lightView = load("src/light_view.lua"),
   namespace = "palette-trio/palette-trio", preferences = {},
   selectedRow = 0, selectedSlot = "base", scroll = 0,
 }
@@ -59,6 +59,7 @@ local function FakeDialog(options)
   end
   function d:show(opts)
     if opts and opts.bounds then rawset(self, "_bounds", opts.bounds) end
+    rawset(self, "_showOptions", opts or {})
     rawset(self, "_shows", (rawget(self, "_shows") or 0) + 1)
     self._open = true
     if FakeShowHook then FakeShowHook(self) end
@@ -388,43 +389,164 @@ step("Light auto-detects the family without relying on the paint color", functio
   ctx.selectedRow = 0
   assert(ctx.lightUI.regeneratePreview(ctx))
   assert(ctx.light.detection.index == 2, "the red square is family 2, got " .. tostring(ctx.light.detection.index))
-  assert(ctx.light.status:match("^Auto: family 2"), ctx.light.status)
-  assert(ctx.lightDialog.data.family == ctx.lightUI.AUTO_FAMILY)
+  assert(ctx.light.status:match("^Auto family"), ctx.light.status)
+  assert(ctx.light.activeFamily and #ctx.light.activeFamily.colors == ctx.light.shared.levels)
 end)
-step("Light eyedropper picks a family from a shade color in the preview", function()
+step("Light layout: compact rows, Family label on Pick/Auto, scrollbars when it does not fit", function()
+  local light = ctx.lightDialog
+  assert(light:widget("family") == nil and light:widget("familyStrip") == nil, "no HEX list, no separate strip row")
+  assert(light:widget("pick").props.label == "Family", "Family label sits on the Pick/Auto row")
+  assert(light:widget("autoFamily").props.enabled == false, "Auto is disabled while already automatic")
+  for _, gone in ipairs({ "cylinderAxis", "bevel", "curvature", "closeLight" }) do
+    assert(light:widget(gone) == nil, gone .. " removed")
+  end
+  assert(light:widget("material").props.label == nil, "Material shares the Shape row")
+  assert(light:widget("dither").props.label == nil, "Dither shares the Shades row")
+  assert(light:widget("separateComponents").props.label == nil, "both checkboxes share a row")
+  assert(light._showOptions.autoscrollbars == true, "scrollbars appear when the window does not fit")
+  -- The family strip and the auto/picked word are drawn in the preview.
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+end)
+step("Light Shape list: cylinder orientation and one Form slider", function()
+  local light = ctx.lightDialog
+  local layer = ctx.light.layer
+  local function choose(label)
+    local data = light.data
+    data.shape = label
+    light.data = data
+    fire(light, "shape", "onchange")
+  end
+  choose("Cylinder (vertical)")
+  assert(layer.shape == "Cylinder" and layer.cylinderAxis == "Vertical")
+  local form = light:widget("form").props
+  assert(form.enabled == true and form.min == 25 and form.max == 300, "Form = curvature for cylinders")
+  local data = light.data
+  data.form = 150
+  light.data = data
+  fire(light, "form", "onrelease")
+  assert(math.abs(layer.curvature - 1.5) < 1e-9)
+  local bevel = layer.bevel
+  choose("Box (bevel)")
+  assert(layer.shape == "Box / Beveled rectangle")
+  assert(layer.bevel == bevel, "switching shape does not reinterpret the old slider value")
+  form = light:widget("form").props
+  assert(form.min == 1 and form.max == 24 and form.value == math.floor(bevel + 0.5), "Form = bevel for boxes")
+  choose("Cylinder (horizontal)")
+  assert(layer.cylinderAxis == "Horizontal")
+  choose("Sphere")
+  assert(layer.shape == "Round / Sphere" and light:widget("form").props.enabled == false, "no Form for spheres")
+  data = light.data
+  data.dither = "No dither"
+  light.data = data
+  fire(light, "dither", "onchange")
+  assert(ctx.light.shared.dither == "Off", "No dither is stored as Off")
+end)
+step("Light eyedropper picks a family from a shade color; Auto resets it", function()
   local light = ctx.lightDialog
   fire(light, "pick", "onclick")
   assert(ctx.light.picking and light:widget("pick").props.text:match("Picking"))
-  local info = ctx.light.previewBounds
   -- The source cel holds the red square at (2..9, 2..9); paint one shade pixel.
   local shade = ctx.model.rows[2].shades.highlight.color
   local cel = sprite.layers[1]:cel(1)
   cel.image:drawPixel(5, 5, app.pixelColor.rgba(shade.r, shade.g, shade.b, 255))
   assert(ctx.lightUI.regeneratePreview(ctx))
-  info = ctx.light.previewBounds
-  local x = info.x + (5 + 0.5) * info.scale
-  local y = info.y + (5 + 0.5) * info.scale
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  local t = ctx.light.viewT
+  local function at(px, py) return ctx.lightView.toScreen(t, px + 0.5, py + 0.5) end
+  local x, y = at(5, 5)
   fire(light, "lightPreview", "onmousedown", { x = x, y = y, button = MouseButton.LEFT })
   assert(not ctx.light.picking, "pick mode ends after one click")
   assert(ctx.light.layer.familyRowId == ctx.model.rows[2].id, "picked family 2 from its highlight")
-  assert(light.data.family:match("^2 #"), light.data.family)
-  assert(ctx.light.status:match("Family 2") or ctx.light.status:match("Picked family 2"), ctx.light.status)
+  assert(ctx.light.status:match("Picked"), ctx.light.status)
+  assert(light:widget("autoFamily").props.enabled == true, "Auto becomes available after a pick")
   -- Clicking transparent space explains instead of changing the family.
-  fire(light, "lightPreview", "onmousedown", { x = info.x + 0.5 * info.scale, y = info.y + 0.5 * info.scale, button = MouseButton.RIGHT })
+  x, y = at(0, 0)
+  fire(light, "lightPreview", "onmousedown", { x = x, y = y, button = MouseButton.RIGHT })
   assert(ctx.light.layer.familyRowId == ctx.model.rows[2].id)
   -- A non-family color explains and keeps the family.
   cel.image:drawPixel(6, 6, app.pixelColor.rgba(10, 250, 10, 255))
   ctx.lightUI.regeneratePreview(ctx)
-  info = ctx.light.previewBounds
-  fire(light, "lightPreview", "onmousedown", { x = info.x + 6.5 * info.scale, y = info.y + 6.5 * info.scale, button = MouseButton.RIGHT })
-  assert(ctx.light.status:match("not a Palette Trio color"), ctx.light.status)
+  x, y = at(6, 6)
+  fire(light, "lightPreview", "onmousedown", { x = x, y = y, button = MouseButton.RIGHT })
+  assert(ctx.light.status:match("not in any family"), ctx.light.status)
   assert(ctx.light.layer.familyRowId == ctx.model.rows[2].id)
-  -- Back to automatic via the Family list.
+  fire(light, "autoFamily", "onclick")
+  assert(ctx.light.layer.familyRowId == nil, "Auto returns to detection")
+end)
+step("Light point light: drag anywhere (also outside the object), stored in sprite coordinates", function()
+  local light = ctx.lightDialog
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  local t = ctx.light.viewT
+  local celPos = sprite.layers[1]:cel(1).position
+  -- Drag to a point far outside the 12x12 cel (cel x = -10, y = 20).
+  local sx, sy = ctx.lightView.toScreen(t, -10, 20)
+  fire(light, "lightPreview", "onmousedown", { x = sx, y = sy, button = MouseButton.LEFT })
+  assert(ctx.light.dragging)
+  fire(light, "lightPreview", "onmousemove", { x = sx, y = sy })
+  fire(light, "lightPreview", "onmouseup", { x = sx, y = sy, button = MouseButton.LEFT })
+  assert(ctx.light.shared.lightX == celPos.x - 10 and ctx.light.shared.lightY == celPos.y + 20,
+    "light at " .. tostring(ctx.light.shared.lightX) .. "," .. tostring(ctx.light.shared.lightY))
+  local saved = ctx.lightAseprite.loadShared(sprite, ctx.namespace)
+  assert(saved.lightX == ctx.light.shared.lightX and saved.lightY == ctx.light.shared.lightY, "saved on the sprite")
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+end)
+step("Light preview: wheel zoom keeps the point under the cursor, Alt-drag pans, double-click fits", function()
+  local light = ctx.lightDialog
+  local View = ctx.lightView
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  local before = ctx.light.viewT
+  local cx, cy = View.toCel(before, 60, 40)
+  local lightBefore = { ctx.light.shared.lightX, ctx.light.shared.lightY }
+  fire(light, "lightPreview", "onwheel", { x = 60, y = 40, deltaY = -1 })
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  local after = ctx.light.viewT
+  assert(after.scale > before.scale, "wheel up zooms in")
+  local ax, ay = View.toCel(after, 60, 40)
+  assert(math.abs(ax - cx) < 1e-6 and math.abs(ay - cy) < 1e-6, "zoom keeps the point under the cursor")
+  fire(light, "lightPreview", "onmousedown", { x = 100, y = 100, button = MouseButton.LEFT, altKey = true })
+  fire(light, "lightPreview", "onmousemove", { x = 130, y = 90 })
+  fire(light, "lightPreview", "onmouseup", { x = 130, y = 90 })
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  assert(math.abs(ctx.light.viewT.originX - (after.originX + 30)) < 1e-6, "Alt-drag pans")
+  assert(ctx.light.shared.lightX == lightBefore[1] and ctx.light.shared.lightY == lightBefore[2], "panning does not move the light")
+  fire(light, "lightPreview", "onmousedown", { x = 20, y = 20, button = MouseButton.MIDDLE })
+  fire(light, "lightPreview", "onmousemove", { x = 25, y = 20 })
+  fire(light, "lightPreview", "onmouseup", { x = 25, y = 20 })
+  assert(ctx.light.view.panX ~= 0)
+  -- Double-click: the first click moved the light; dblclick restores it and fits.
+  fire(light, "lightPreview", "onmousedown", { x = 50, y = 50, button = MouseButton.LEFT })
+  fire(light, "lightPreview", "onmouseup", { x = 50, y = 50, button = MouseButton.LEFT })
+  fire(light, "lightPreview", "ondblclick", { x = 50, y = 50, button = MouseButton.LEFT })
+  assert(ctx.light.view.zoom == 1 and ctx.light.view.panX == 0 and ctx.light.view.panY == 0, "fit")
+  assert(ctx.light.shared.lightX == lightBefore[1] and ctx.light.shared.lightY == lightBefore[2], "double-click does not move the light")
+end)
+step("Light Height and Falloff sliders change the preview and are saved", function()
+  local light = ctx.lightDialog
+  assert(light:widget("lightElevation") == nil, "Elevation replaced by Height")
   local data = light.data
-  data.family = ctx.lightUI.AUTO_FAMILY
+  data.lightHeight = 7
+  data.falloff = 80
   light.data = data
-  fire(light, "family", "onchange")
-  assert(ctx.light.layer.familyRowId == nil)
+  fire(light, "lightHeight", "onchange")
+  fire(light, "lightHeight", "onrelease")
+  assert(ctx.light.shared.lightHeight == 7 and ctx.light.shared.falloff == 80)
+  local saved = ctx.lightAseprite.loadShared(sprite, ctx.namespace)
+  assert(saved.lightHeight == 7 and saved.falloff == 80)
+end)
+step("Light Material: Glossy regenerates and is saved on the layer", function()
+  local light = ctx.lightDialog
+  assert(light:widget("material"), "Material control exists")
+  local data = light.data
+  data.material = "Glossy"
+  light.data = data
+  fire(light, "material", "onchange")
+  assert(ctx.light.layer.material == "Glossy")
+  assert(ctx.lightAseprite.loadLayerSettings(sprite.layers[1], ctx.namespace).material == "Glossy", "saved on the layer")
+  data = light.data
+  data.material = "Matte"
+  light.data = data
+  fire(light, "material", "onchange")
+  assert(ctx.light.layer.material == "Matte")
 end)
 step("Light new-layer output", function()
   fire(ctx.lightDialog, "applyLight", "onclick")

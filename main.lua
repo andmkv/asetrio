@@ -80,6 +80,7 @@ function init(plugin)
     about = loadModule(root, "src/about.lua"),
     lightEngine = loadModule(root, "src/light_engine.lua"),
     lightAseprite = loadModule(root, "src/light_aseprite.lua"),
+    lightView = loadModule(root, "src/light_view.lua"),
     lightUI = loadModule(root, "src/light_ui.lua"),
     namespace = PUBLISHER_NAME,
     preferences = plugin.preferences,

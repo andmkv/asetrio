@@ -28,12 +28,19 @@ function Aseprite.defaultShared()
     preserveOutlines = false,
     separateComponents = true,
     sourceLayerUuid = "",
+    -- Point light, in sprite pixel coordinates. nil until first placed: then
+    -- it is derived from the direction/elevation above (older settings).
+    lightX = nil,
+    lightY = nil,
+    lightHeight = nil,
+    falloff = 30,
   }
 end
 
 function Aseprite.defaultLayer()
   return {
     shape = "Round / Sphere",
+    material = "Matte",
     cylinderAxis = "Horizontal",
     bevel = 4,
     curvature = 1,
@@ -63,6 +70,14 @@ function Aseprite.normalizeShared(value)
   result.preserveOutlines = value.preserveOutlines == true
   result.separateComponents = value.separateComponents ~= false
   result.sourceLayerUuid = type(value.sourceLayerUuid) == "string" and value.sourceLayerUuid or ""
+  local lx, ly = tonumber(value.lightX), tonumber(value.lightY)
+  if lx and ly and lx == lx and ly == ly then
+    result.lightX = math.max(-100000, math.min(100000, lx))
+    result.lightY = math.max(-100000, math.min(100000, ly))
+  end
+  local height = tonumber(value.lightHeight)
+  if height and height == height then result.lightHeight = math.max(1, math.min(4096, height)) end
+  result.falloff = bound(value.falloff, 0, 100, result.falloff)
   return result
 end
 
@@ -76,6 +91,7 @@ function Aseprite.normalizeLayer(value)
     ["Contour / Auto Relief"] = true,
   }
   if shapes[value.shape] then result.shape = value.shape end
+  if value.material == "Glossy" then result.material = "Glossy" end
   if value.cylinderAxis == "Vertical" then result.cylinderAxis = "Vertical" end
   result.bevel = bound(value.bevel, 1, 64, result.bevel)
   result.curvature = bound(value.curvature, 0.25, 3, result.curvature)
