@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+- Fixed: choosing **About Palette Trio...** raised "Field link does not exist" in 0.3.1, because Aseprite's script dialogs have no link widget. The two links are now buttons that open the address in your browser (and show the address if the browser cannot be opened).
+
+## 0.3.1
+
+- Fixed: the About dialog read `package.json` from disk, which made Aseprite show a "Security" prompt asking for file access. The extension no longer reads any files of its own; the version is built into the code and checked against `package.json` at build time.
+
 ## 0.3.0 - first public beta
 
 First public release. Earlier internal development builds were numbered 1.x and 2.x; public versions start at 0.3 and follow the beta. Sprite data written by those builds still loads.

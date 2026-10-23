@@ -7,20 +7,29 @@ About.GITHUB_URL = "https://github.com/andmkv/asetrio"
 About.GITHUB_TEXT = "GitHub - source, issues, releases"
 About.AUTHOR = "Andrey Makeev"
 
--- Reads "version" from the extension's package.json (no JSON library needed).
-function About.readVersion(root)
-  local ok, text = pcall(function()
-    local file = assert(io.open(app.fs.joinPath(root, "package.json"), "r"))
-    local content = file:read("a")
-    file:close()
-    return content
-  end)
-  if not ok or type(text) ~= "string" then return nil end
-  return text:match('"version"%s*:%s*"([^"]+)"')
-end
+-- Kept in code on purpose: reading package.json at runtime would make Aseprite
+-- show a script-security prompt. scripts/build.py and the tests fail if this
+-- differs from the "version" in package.json.
+About.VERSION = "0.3.2"
 
 function About.versionText(ctx)
-  return ctx.version and ("Version " .. ctx.version .. " (beta)") or "Beta"
+  return "Version " .. About.VERSION .. " (beta)"
+end
+
+-- Opens a URL in the desktop browser. Aseprite's Dialog has no link widget;
+-- app.command.Launch is the documented way (it needs no file access).
+function About.launch(ctx, url)
+  local launch = ctx.launch or function(target)
+    return app.command.Launch { path = target }
+  end
+  local ok, result = pcall(launch, url)
+  if not ok or result == false then
+    (ctx.alert or app.alert) {
+      title = "Palette Trio",
+      text = { "Could not open the browser. The address is:", url },
+      buttons = "OK",
+    }
+  end
 end
 
 function About.open(ctx)
@@ -45,9 +54,11 @@ function About.open(ctx)
   dlg:separator()
   dlg:label { id = "author", text = "By " .. About.AUTHOR .. " - MIT License" }
   dlg:newrow()
-  dlg:link { id = "website", text = About.WEBSITE_TEXT, url = About.WEBSITE_URL }
+  dlg:button { id = "website", text = About.WEBSITE_TEXT,
+    onclick = function() About.launch(ctx, About.WEBSITE_URL) end }
   dlg:newrow()
-  dlg:link { id = "github", text = About.GITHUB_TEXT, url = About.GITHUB_URL }
+  dlg:button { id = "github", text = About.GITHUB_TEXT,
+    onclick = function() About.launch(ctx, About.GITHUB_URL) end }
   dlg:separator()
   dlg:button { id = "close", text = "Close", focus = true, onclick = function() dlg:close() end }
   dlg:show { wait = false }

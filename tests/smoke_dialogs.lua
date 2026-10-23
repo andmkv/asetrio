@@ -46,7 +46,7 @@ local function FakeDialog(options)
     end
   end
   for _, kind in ipairs({ "label", "button", "check", "radio", "entry", "number", "slider",
-    "combobox", "color", "canvas", "file", "separator", "tab", "endtabs", "link" }) do
+    "combobox", "color", "canvas", "file", "separator", "tab", "endtabs" }) do
     d[kind] = add(kind)
   end
   function d:newrow() return self end
@@ -217,16 +217,28 @@ step("menu: 3/5 shades toggle persists without touching bounds", function()
   assert(sprite.properties(ctx.namespace).paletteTrio, "shade toggle stores the families")
 end)
 step("menu: About shows the author, version and both links", function()
-  ctx.version = ctx.about.readVersion(root)
-  assert(ctx.version and ctx.version:match("^0%.3"), "version read from package.json: " .. tostring(ctx.version))
+  ctx.version = ctx.about.VERSION
+  local manifest = assert(io.open(root .. "/package.json")):read("a"):match('"version"%s*:%s*"([^"]+)"')
+  assert(ctx.version == manifest, "About.VERSION " .. ctx.version .. " == package.json " .. tostring(manifest))
   menuRun("about")
   local about = ctx.aboutDialog
   assert(about, "About opens from the menu")
   assert(about:widget("version").props.text:match((ctx.version:gsub("%.", "%%."))))
   assert(about:widget("author").props.text:match("Andrey Makeev"))
-  local site, repo = about:widget("website").props, about:widget("github").props
-  assert(site.url == "https://smallhall.net" and site.text == "Smallhall.net - More apps and games")
-  assert(repo.url:match("^https://github%.com/andmkv/asetrio$"))
+  assert(about:widget("website").props.text == "Smallhall.net - More apps and games")
+  local opened = {}
+  ctx.launch = function(url) opened[#opened + 1] = url; return true end
+  fire(about, "website", "onclick")
+  fire(about, "github", "onclick")
+  assert(opened[1] == "https://smallhall.net", tostring(opened[1]))
+  assert(opened[2] == "https://github.com/andmkv/asetrio", tostring(opened[2]))
+  local alerted = false
+  local savedAlert = ctx.alert
+  ctx.alert = function(t) alerted = table.concat(t.text, " "):match("smallhall") ~= nil; return 1 end
+  ctx.launch = function() error("no browser") end
+  fire(about, "website", "onclick")
+  assert(alerted, "if the browser cannot open, the address is shown")
+  ctx.alert, ctx.launch = savedAlert, nil
   ctx.about.open(ctx)
   assert(#dialogs > 0)
   fire(about, "close", "onclick")

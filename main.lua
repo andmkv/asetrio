@@ -81,14 +81,12 @@ function init(plugin)
     lightEngine = loadModule(root, "src/light_engine.lua"),
     lightAseprite = loadModule(root, "src/light_aseprite.lua"),
     lightUI = loadModule(root, "src/light_ui.lua"),
-    version = nil,
     namespace = PUBLISHER_NAME,
     preferences = plugin.preferences,
     selectedRow = 0,
     selectedSlot = "base",
     scroll = 0,
   }
-  runtime.version = runtime.about.readVersion(root)
   runtime.model = model.new(color)
   runtime.loaded = false
 

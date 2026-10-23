@@ -27,7 +27,23 @@ FILES = [
 ]
 
 
+def check_version() -> None:
+    """The About dialog's version lives in code; it must match package.json."""
+    import json
+    import re
+
+    manifest = json.loads((ROOT / "package.json").read_text())["version"]
+    about = (ROOT / "src" / "about.lua").read_text()
+    match = re.search(r'About\.VERSION\s*=\s*"([^"]+)"', about)
+    if not match or match.group(1) != manifest:
+        raise SystemExit(
+            f"Version mismatch: package.json is {manifest}, "
+            f"src/about.lua has {match.group(1) if match else 'none'}"
+        )
+
+
 def main() -> None:
+    check_version()
     listed = {p.as_posix() for p in FILES}
     missing = sorted(
         p.relative_to(ROOT).as_posix()
