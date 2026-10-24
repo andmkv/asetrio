@@ -9,15 +9,23 @@ ASEPRITE=/path/to/aseprite ./tests/run.sh
 
 | Suite | What it covers |
 |---|---|
-| `tests/run.lua` (76 tests) | Shade model, OKLCH color math, native-palette sync rules, subset exclusions, ordering, grid and toolbar geometry at narrow/default/wide widths, persistence errors, and the Light engine (family detection, eyedropper resolution, shade matching, Matte vs Glossy materials, point light direction/distance/falloff, preview zoom and pan). |
-| `tests/integration.lua` (28 tests) | Real Aseprite API: 5/32/64/256-color palettes, palette edits and deletions, exclusions, save/reopen `.aseprite` vs PNG, indexed-palette safety, writing to the palette with undo, menu registration (one command, checked against `gui.xml`), Light on real cels, replace-source with undo, document switching. |
-| `tests/smoke_dialogs.lua` (31 steps) | Every dialog against a strict fake `Dialog` (the real one is `nil` in batch mode): panel input, the `...` menu, About, editor, settings, choosers, Light, the family list and the preview eyedropper. Also checks that nothing writes window bounds after opening and that no widget visibility is toggled. |
+| `tests/run.lua` (80 tests) | Shade model, OKLCH color math, native-palette sync rules, subset exclusions, ordering, grid and toolbar geometry at narrow/default/wide widths, persistence errors, and the Light engine (family detection, eyedropper resolution, shade matching, Matte vs Glossy materials, point light direction/distance/falloff, preview zoom and pan, layer-list and frame-strip geometry, scene bounds). |
+| `tests/integration.lua` (35 tests) | Real Aseprite API: 5/32/64/256-color palettes, palette edits and deletions, exclusions, save/reopen `.aseprite` vs PNG, indexed-palette safety, writing to the palette with undo, menu registration (one command, checked against `gui.xml`), Light on real cels, replace-source with undo, document switching, Light on several layers and frames (batch output and replacement as one undo step). |
+| `tests/smoke_dialogs.lua` (41 steps) | Every dialog against a strict fake `Dialog` (the real one is `nil` in batch mode): panel input, the `...` menu, About, editor, settings, choosers, Light, the layer list, kept colors, multi-layer preview, frame strip, This frame / All frames, and the preview eyedropper. Also checks that nothing writes window bounds after opening and that no widget visibility is toggled. |
 
 ## What the automated tests cannot prove
 
 Native widget appearance, real mouse behavior, window placement, UI scaling and Aseprite's redraw behavior need a real Aseprite window. Use the checklist below.
 
 Batch-mode quirks the tests work around: `Dialog()` returns `nil`, `Sprite:close()` crashes Aseprite 1.3.17, theme colors are transparent.
+
+## Looking at the Light canvases without the GUI
+
+```sh
+aseprite -b --script-param out=build --script tests/render_light.lua
+```
+
+Renders the layer list, the preview and the frame strip with the real paint code into `build/light-dialog-canvases.png` (text as dots, native widgets not drawn). `tests/render_preview.lua` does the same for the panel grid. Both use the mock graphics context in `tests/mock_gc.lua`.
 
 ## Regenerating the README images
 
@@ -40,9 +48,10 @@ The first command shades sample objects with the real Light engine and writes `l
 8. **About Palette Trio...** shows the version and author. Both links open.
 9. Light **Material: Glossy** on a sphere, a cylinder and a bevelled box: each shows a small crisp highlight (spot, band, lit edge); Matte looks as before.
 10. Light: drag the light far outside the object, zoom out with the wheel, Alt+drag to pan, double-click to fit. Moving the light closer gives a stronger gradient; farther is dimmer. Height and Falloff change the result as described.
-11. Light on an object painted only with shadow/highlight colors: the Family strip shows that family and the status reads "Auto family".
-12. Light **Pick**, then click a highlight: that family is selected (strip shows it, **Auto** becomes available). Click a non-family color: a message appears and nothing changes.
-13. Light **Output: Replace source**: the warning explains that the original is not saved in the file. Apply twice gives the same result. Undo restores the original. After restarting Aseprite, applying again shades the current pixels.
-14. Save as `.aseprite` and reopen: same families, pins, exclusions and Light family pick. Save as PNG: a one-time warning appears.
-15. **Write to sprite palette... > Append**, reopen the panel: the written shades did not become extra families. Undo reverts it.
-16. Opening Palette Trio on a document does not mark it as modified.
+11. Light with several layers: check two layers, uncheck one (it leaves the preview), click a name (only that layer stays checked), try **all** and **none**. Click frames in the strip: the editor follows, a layer without a cel on that frame is dimmed, and the dot under a frame is hollow when no checked layer has a cel there. Apply with **All frames** and check the new layers on every frame; **Undo** once removes them all.
+12. Light on an object painted only with shadow/highlight colors: the Family strip shows that family and the status reads "Auto family".
+13. Light **Pick**, then click a highlight: that family is selected (strip shows it, **Auto** becomes available). Click a non-family color: a message appears and nothing changes.
+14. Light **Output: Replace source**: the warning explains that the original is not saved in the file. Apply twice gives the same result. Undo restores the original. After restarting Aseprite, applying again shades the current pixels.
+15. Save as `.aseprite` and reopen: same families, pins, exclusions and Light family pick. Save as PNG: a one-time warning appears.
+16. **Write to sprite palette... > Append**, reopen the panel: the written shades did not become extra families. Undo reverts it.
+17. Opening Palette Trio on a document does not mark it as modified.

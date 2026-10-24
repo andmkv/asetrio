@@ -13,6 +13,8 @@ local LightAseprite = loadProjectModule("src/light_aseprite.lua")
 local Source = loadProjectModule("src/source.lua")
 local Grid = loadProjectModule("src/grid.lua")
 local LightView = loadProjectModule("src/light_view.lua")
+local Widgets = loadProjectModule("src/light_widgets.lua")
+local LightJob = loadProjectModule("src/light_job.lua")
 
 local passed, failed = 0, 0
 
@@ -1175,6 +1177,94 @@ test("Light settings keep the point light; older settings have none and default 
   local new = LightAseprite.normalizeShared({ lightX = -12.5, lightY = 40, lightHeight = 18, falloff = 140 })
   equal(new.lightX, -12.5); equal(new.lightY, 40); equal(new.lightHeight, 18); equal(new.falloff, 100)
   equal(LightAseprite.normalizeShared({ lightX = 0 / 0, lightY = 1 }).lightX, nil, "NaN rejected")
+end)
+
+------------------------------------------------------------------------------
+-- Light: layer list, frame strip, scene bounds
+------------------------------------------------------------------------------
+
+test("layer list: header all/none, rows map to indexes, scrolling", function()
+  local L = Widgets.Layers
+  local width, height, count = L.WIDTH, L.HEADER_H + L.ROW_H * 4, 10
+  equal(L.visibleRows(height), 4)
+  equal(L.maxScroll(height, count), 6)
+  equal(L.maxScroll(height, 3), 0, "no scrolling when everything fits")
+  equal(L.hit(width, height, count, 0, 5, 3).kind, "all")
+  equal(L.hit(width, height, count, 0, width - 5, 3).kind, "none")
+  local box = L.hit(width, height, count, 0, L.PAD + 2, L.rowTop(2, 0) + 3)
+  equal(box.kind, "box"); equal(box.index, 2)
+  local name = L.hit(width, height, count, 0, 40, L.rowTop(3, 0) + 3)
+  equal(name.kind, "name"); equal(name.index, 3)
+  equal(L.hit(width, height, count, 2, 40, L.rowTop(3, 2) + 3).index, 3, "scroll offsets the rows")
+  equal(L.hit(width, height, 2, 0, 40, L.rowTop(3, 0) + 3), nil, "below the last row")
+  equal(L.hit(width, height, count, 0, -1, 20), nil)
+  equal(L.scrollToShow(height, count, 9, 0), 5, "scrolls to reveal a row below")
+  equal(L.scrollToShow(height, count, 1, 5), 0, "and one above")
+  equal(L.scrollToShow(height, count, 3, 1), 1, "already visible: unchanged")
+end)
+
+test("frame strip: one row of frames, hit-testing, scrolling follows the frame", function()
+  local F = Widgets.Frames
+  local width, count = 100, 20
+  equal(F.contentWidth(count), 20 * F.CELL_W)
+  assert(F.maxScroll(width, count) > 0 and F.maxScroll(width, 3) == 0)
+  local first, last = F.visibleRange(width, count, 0)
+  equal(first, 1); equal(last, math.floor((width - 1) / F.CELL_W) + 1)
+  equal(F.hit(width, count, 0, 2, 5), 1)
+  equal(F.hit(width, count, 0, F.CELL_W + 1, 5), 2)
+  equal(F.hit(width, count, F.CELL_W * 3, 2, 5), 4, "scrolled")
+  equal(F.hit(width, 2, 0, F.CELL_W * 2 + 1, 5), nil, "past the last frame")
+  equal(F.hit(width, count, 0, 5, F.HEIGHT + 1), nil)
+  local scroll = F.scrollToShow(width, count, 20, 0)
+  assert(F.cellX(20, scroll) + F.CELL_W <= width and F.cellX(20, scroll) >= 0, "last frame fully visible")
+  equal(F.scrollToShow(width, count, 1, scroll), 0)
+  equal(F.scrollBy(width, count, 0, -1), 0, "never negative")
+  equal(F.scrollBy(width, count, F.maxScroll(width, count), 5), F.maxScroll(width, count), "never past the end")
+  local a, b = F.visibleRange(width, 0, 0)
+  assert(b < a, "no frames, nothing visible")
+end)
+
+test("frame strip: a custom (measured) cell width is respected everywhere", function()
+  local F = Widgets.Frames
+  assert(F.CELL_W <= 16 and F.HEIGHT <= 24, "compact like Aseprite's timeline")
+  local width, count, cell = 100, 40, 16
+  equal(F.contentWidth(count, cell), 640)
+  equal(F.hit(width, count, 0, cell + 1, 5, cell), 2)
+  equal(F.hit(width, count, 0, F.CELL_W + 1, 5, cell), 1, "at 15px a 16px cell is still frame 1...")
+  equal(F.hit(width, count, 0, F.CELL_W + 1, 5), 2, "...but the default 14px cell is frame 2")
+  local first, last = F.visibleRange(width, count, cell * 2, cell)
+  equal(first, 3); equal(last, 3 + math.floor((width - 1) / cell))
+  equal(F.cellX(3, cell * 2, cell), 0)
+  local scroll = F.scrollToShow(width, count, 40, 0, cell)
+  equal(scroll, 640 - width)
+  equal(F.scrollBy(width, count, 0, 2, cell), cell * 2)
+  equal(F.maxScroll(width, 5, cell), 0, "5 frames fit")
+end)
+
+test("scene bounds: objects in sprite coordinates, union across layers", function()
+  local function data(w, h, filled)
+    local pixels = imagePixels(w, h, function(x, y)
+      if filled(x, y) then return { r = 1, g = 2, b = 3, a = 255 } end
+      return { r = 0, g = 0, b = 0, a = 0 }
+    end)
+    return { width = w, height = h, pixels = pixels }
+  end
+  -- imagePixels counts from 1, so these are 0-based x 2..5, y 1..3 and (0, 0).
+  local a = data(10, 10, function(x, y) return x >= 3 and x <= 6 and y >= 2 and y <= 4 end)
+  local b = data(8, 8, function(x, y) return x == 1 and y == 1 end)
+  local boundsA, boundsB = LightJob.objectBounds(a), LightJob.objectBounds(b)
+  equal(boundsA.x, 2); equal(boundsA.width, 4); equal(boundsA.height, 3); equal(boundsA.size, 4)
+  equal(LightJob.objectBounds(data(4, 4, function() return false end)), nil, "empty cel")
+  local scene = LightJob.sceneBounds({
+    { bounds = boundsA, cel = { position = { x = 10, y = 10 } } },
+    { bounds = boundsB, cel = { position = { x = 30, y = 0 } } },
+    { bounds = nil, cel = { position = { x = 99, y = 99 } } },
+  })
+  equal(scene.x, 12); equal(scene.y, 0)
+  equal(scene.width, 19); equal(scene.height, 14)   -- x 12..31, y 0..14
+  equal(scene.size, 19)
+  assert(math.abs(scene.centerX - 21.5) < 1e-9 and math.abs(scene.centerY - 7) < 1e-9)
+  equal(LightJob.sceneBounds({}), nil)
 end)
 
 io.write(string.format("\n%d passed, %d failed\n", passed, failed))

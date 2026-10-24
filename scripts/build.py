@@ -24,6 +24,8 @@ FILES = [
     Path("src/light_engine.lua"),
     Path("src/light_aseprite.lua"),
     Path("src/light_view.lua"),
+    Path("src/light_widgets.lua"),
+    Path("src/light_job.lua"),
     Path("src/light_ui.lua"),
 ]
 

@@ -28,6 +28,7 @@ function Aseprite.defaultShared()
     preserveOutlines = false,
     separateComponents = true,
     sourceLayerUuid = "",
+    sourceLayerUuids = {},
     -- Point light, in sprite pixel coordinates. nil until first placed: then
     -- it is derived from the direction/elevation above (older settings).
     lightX = nil,
@@ -70,6 +71,14 @@ function Aseprite.normalizeShared(value)
   result.preserveOutlines = value.preserveOutlines == true
   result.separateComponents = value.separateComponents ~= false
   result.sourceLayerUuid = type(value.sourceLayerUuid) == "string" and value.sourceLayerUuid or ""
+  result.sourceLayerUuids = {}
+  if type(value.sourceLayerUuids) == "table" then
+    for _, uuid in ipairs(value.sourceLayerUuids) do
+      if type(uuid) == "string" and uuid ~= "" and #result.sourceLayerUuids < 256 then
+        result.sourceLayerUuids[#result.sourceLayerUuids + 1] = uuid
+      end
+    end
+  end
   local lx, ly = tonumber(value.lightX), tonumber(value.lightY)
   if lx and ly and lx == lx and ly == ly then
     result.lightX = math.max(-100000, math.min(100000, lx))
@@ -157,8 +166,10 @@ local function walkLayers(layers, namespace, frameNumber, parentVisible, depth, 
       walkLayers(layer.layers, namespace, frameNumber, visible, depth + 1, output)
     elseif layer.isImage and not layer.isTilemap and not layer.isReference
       and visible and not Aseprite.isGeneratedLayer(layer, namespace) then
-      local ok, cel = pcall(function() return layer:cel(frameNumber) end)
-      if ok and cel and cel.image and effectivelyVisible(layer, parentVisible) then
+      local ok, cel = true, nil
+      if frameNumber ~= nil then ok, cel = pcall(function() return layer:cel(frameNumber) end) end
+      if frameNumber == nil or (ok and cel and cel.image) then
+        if not effectivelyVisible(layer, parentVisible) then goto continue end
         local uuid = tostring(layer.uuid)
         local name = layer.name or "Layer"
         output[#output + 1] = {
@@ -167,9 +178,11 @@ local function walkLayers(layers, namespace, frameNumber, parentVisible, depth, 
           uuid = uuid,
           name = name,
           label = string.rep("  ", depth) .. name,
+          depth = depth,
         }
       end
     end
+    ::continue::
   end
 end
 
@@ -184,6 +197,12 @@ function Aseprite.sourceLayers(sprite, frameNumber, namespace)
     if seen[record.label] > 1 then record.label = record.label .. " [" .. record.uuid:sub(-4) .. "]" end
   end
   return output
+end
+
+-- Every visible image layer (bottom to top), whether or not it has a cel on
+-- the current frame. Used by the Light layer list.
+function Aseprite.imageLayers(sprite, namespace)
+  return Aseprite.sourceLayers(sprite, nil, namespace)
 end
 
 function Aseprite.findSource(layers, uuid)
@@ -309,46 +328,126 @@ local function walkGenerated(layers, namespace, sourceUuid)
   return nil
 end
 
-function Aseprite.applyOutput(sprite, sourceRecord, frameNumber, image, sourceCel, settings, namespace)
-  if not sprite or not sourceRecord or not sourceCel then return false, "Choose a source layer with a cel in the active frame." end
+local function checkWritable(sprite, record)
   if not Aseprite.isRgbSprite(sprite) then
-    return false, "Palette Trio Light supports RGB sprites only. Indexed and grayscale sprites were not changed."
+    return "Palette Trio Light supports RGB sprites only. Indexed and grayscale sprites were not changed."
   end
-  if sourceRecord.layer.isGroup or sourceRecord.layer.isTilemap or sourceRecord.layer.isReference then
-    return false, "Choose an editable RGB image layer. Groups, tilemaps, and reference layers are unsupported."
+  if record.layer.isGroup or record.layer.isTilemap or record.layer.isReference then
+    return "Choose an editable RGB image layer. Groups, tilemaps, and reference layers are unsupported."
   end
-  local outputLayer = walkGenerated(sprite.layers, namespace, sourceRecord.uuid)
-  local oldCel = outputLayer and outputLayer:cel(frameNumber) or nil
-  if outputLayer and not outputLayer.isEditable then
-    return false, "The existing Palette Trio Light output layer is locked. Unlock it to regenerate."
-  end
+  return nil
+end
 
+-- Writes shaded images to "Palette Trio Light - <layer>" layers, one per
+-- source layer, for any number of frames, in ONE undoable transaction.
+-- jobs: list of { record, settings, frames = { { frame, image, cel }, ... } }.
+-- Source layers are never changed. Returns true, firstOutputLayer, cels
+-- written; or false, reason (nothing is changed on failure).
+function Aseprite.applyOutputBatch(sprite, jobs, namespace)
+  if not sprite or #jobs == 0 then return false, "Choose a source layer with a cel on the chosen frame." end
+  local outputs = {}
+  for i, job in ipairs(jobs) do
+    local problem = checkWritable(sprite, job.record)
+    if problem then return false, problem end
+    local existing = walkGenerated(sprite.layers, namespace, job.record.uuid)
+    if existing and not existing.isEditable then
+      return false, "The existing Palette Trio Light output layer \"" .. tostring(existing.name)
+        .. "\" is locked. Unlock it to regenerate."
+    end
+    outputs[i] = existing
+  end
+  local written = 0
   local ok, reason = pcall(function()
     app.transaction("Apply Palette Trio Light", function()
-      if not outputLayer then
-        outputLayer = sprite:newLayer()
-        outputLayer.name = "Palette Trio Light - " .. (sourceRecord.layer.name or "Source")
-        if sourceRecord.layer.parent ~= sprite then outputLayer.parent = sourceRecord.layer.parent end
-        outputLayer.stackIndex = sourceRecord.layer.stackIndex + 1
+      for i, job in ipairs(jobs) do
+        local record = job.record
+        local outputLayer = outputs[i]
+        if not outputLayer then
+          outputLayer = sprite:newLayer()
+          outputLayer.name = "Palette Trio Light - " .. (record.layer.name or "Source")
+          if record.layer.parent ~= sprite then outputLayer.parent = record.layer.parent end
+          outputLayer.stackIndex = record.layer.stackIndex + 1
+          outputs[i] = outputLayer
+        end
+        for _, item in ipairs(job.frames) do
+          local oldCel = outputLayer:cel(item.frame)
+          if oldCel then sprite:deleteCel(oldCel) end
+          local newCel = sprite:newCel(outputLayer, item.frame, item.image,
+            Point(item.cel.position.x, item.cel.position.y))
+          newCel.opacity = item.cel.opacity
+          newCel.zIndex = item.cel.zIndex
+          written = written + 1
+        end
+        outputLayer.opacity = record.layer.opacity
+        outputLayer.blendMode = record.layer.blendMode
+        outputLayer.isVisible = true
+        outputLayer.properties(namespace).paletteTrioLightOutput = {
+          generated = true,
+          sourceLayerUuid = record.uuid,
+          sourceName = record.layer.name or "Source",
+          frameNumber = job.frames[1] and job.frames[1].frame or 1,
+          settings = Aseprite.normalizeLayer(job.settings),
+        }
       end
-      if oldCel then sprite:deleteCel(oldCel) end
-      local newCel = sprite:newCel(outputLayer, frameNumber, image, Point(sourceCel.position.x, sourceCel.position.y))
-      newCel.opacity = sourceCel.opacity
-      newCel.zIndex = sourceCel.zIndex
-      outputLayer.opacity = sourceRecord.layer.opacity
-      outputLayer.blendMode = sourceRecord.layer.blendMode
-      outputLayer.isVisible = true
-      outputLayer.properties(namespace).paletteTrioLightOutput = {
-        generated = true,
-        sourceLayerUuid = sourceRecord.uuid,
-        sourceName = sourceRecord.layer.name or "Source",
-        frameNumber = frameNumber,
-        settings = Aseprite.normalizeLayer(settings),
-      }
     end)
   end)
   if not ok then return false, tostring(reason) end
-  return true, outputLayer
+  return true, outputs[1], written
+end
+
+-- Single-frame convenience used by earlier code and tests.
+function Aseprite.applyOutput(sprite, sourceRecord, frameNumber, image, sourceCel, settings, namespace)
+  if not sprite or not sourceRecord or not sourceCel then
+    return false, "Choose a source layer with a cel in the active frame."
+  end
+  local ok, layer = Aseprite.applyOutputBatch(sprite, { {
+    record = sourceRecord, settings = settings,
+    frames = { { frame = frameNumber, image = image, cel = sourceCel } },
+  } }, namespace)
+  return ok, layer
+end
+
+-- Replaces the pixels of source cels (any layers and frames) in ONE undoable
+-- transaction. jobs: list of { record, frames = { { frame, image }, ... } }.
+-- Returns true, snapshots (keyed "<uuid>:<frame>") or false, reason; nothing
+-- changes on failure. Each snapshot keeps the original pixels for re-shading.
+function Aseprite.replaceSourceBatch(sprite, jobs)
+  if not sprite or #jobs == 0 then return false, "Choose a source layer first." end
+  local plan = {}
+  for _, job in ipairs(jobs) do
+    local problem = checkWritable(sprite, job.record)
+    if problem then return false, problem end
+    if not job.record.layer.isEditable then
+      return false, "The layer \"" .. tostring(job.record.layer.name) .. "\" is locked. Unlock it to replace its pixels."
+    end
+    for _, item in ipairs(job.frames) do
+      local cel = job.record.layer:cel(item.frame)
+      if not cel or not cel.image then
+        return false, "A source cel is missing on frame " .. item.frame .. ". Refresh the preview and try again."
+      end
+      if cel.image.width ~= item.image.width or cel.image.height ~= item.image.height then
+        return false, "A source cel changed size. Refresh the preview and try again."
+      end
+      plan[#plan + 1] = { record = job.record, frame = item.frame, cel = cel, image = item.image, original = Image(cel.image) }
+    end
+  end
+  local ok, reason = pcall(function()
+    app.transaction("Palette Trio Light: replace source", function()
+      for _, step in ipairs(plan) do step.cel.image = step.image end
+    end)
+  end)
+  if not ok then return false, tostring(reason) end
+  local snapshots = {}
+  for _, step in ipairs(plan) do
+    local cel = step.record.layer:cel(step.frame)
+    snapshots[step.record.uuid .. ":" .. step.frame] = {
+      original = step.original,
+      appliedBytes = cel and imageBytes(cel.image) or nil,
+      width = step.image.width,
+      height = step.image.height,
+    }
+  end
+  return true, snapshots
 end
 
 return Aseprite

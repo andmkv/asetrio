@@ -33,6 +33,8 @@ local function bindSpriteChanges(ctx, sprite)
       refreshViews(ctx)
       return
     end
+    -- Pixels may have changed: Light re-reads cels on its next refresh.
+    if ctx.lightDialog then pcall(ctx.lightUI.invalidate, ctx) end
     if (ctx.dialog or ctx.lightDialog) and ctx.session.onSpriteChanged(ctx) then
       if ctx.dialog then ctx.ui.refresh(ctx) end
       if ctx.lightDialog then pcall(ctx.lightUI.regeneratePreview, ctx) end
@@ -81,6 +83,8 @@ function init(plugin)
     lightEngine = loadModule(root, "src/light_engine.lua"),
     lightAseprite = loadModule(root, "src/light_aseprite.lua"),
     lightView = loadModule(root, "src/light_view.lua"),
+    lightWidgets = loadModule(root, "src/light_widgets.lua"),
+    lightJob = loadModule(root, "src/light_job.lua"),
     lightUI = loadModule(root, "src/light_ui.lua"),
     namespace = PUBLISHER_NAME,
     preferences = plugin.preferences,
@@ -94,7 +98,10 @@ function init(plugin)
   runtime.siteChangeCode = app.events:on("sitechange", function()
     if not runtime then return end
     local sprite = app.sprite
-    if sprite ~= runtime.currentSprite then
+    if sprite == runtime.currentSprite then
+      -- Same document: the editor's frame may have changed.
+      if runtime.lightDialog then pcall(runtime.lightUI.syncFrame, runtime) end
+    else
       if runtime.dialog or runtime.lightDialog then
         switchSprite(runtime, sprite)
       else

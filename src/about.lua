@@ -10,7 +10,7 @@ About.AUTHOR = "Andrey Makeev"
 -- Kept in code on purpose: reading package.json at runtime would make Aseprite
 -- show a script-security prompt. scripts/build.py and the tests fail if this
 -- differs from the "version" in package.json.
-About.VERSION = "0.4.1"
+About.VERSION = "0.5.3"
 
 function About.versionText(ctx)
   return "Version " .. About.VERSION .. " (beta)"

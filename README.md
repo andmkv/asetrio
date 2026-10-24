@@ -24,7 +24,7 @@ Click a swatch to paint with it. Change a color in Aseprite's own palette and it
 </tr>
 <tr>
 <td align="center"><sub>The panel (3 shades) beside Aseprite's own palette. Same swatch size, one family per palette color.</sub></td>
-<td align="center"><sub>Palette Trio Light: a point light placed in the preview, the family colors in the corner, Glossy material.</sub></td>
+<td align="center"><sub>Palette Trio Light: layer list, the preview with the point light and the family tag, the frame strip, and the settings.</sub></td>
 </tr>
 </table>
 
@@ -32,11 +32,11 @@ Click a swatch to paint with it. Change a color in Aseprite's own palette and it
 
 ## Beta status, and please read this
 
-Palette Trio is a **public beta (0.4)**. It has been tested by hand on macOS with Aseprite 1.3.17 and by automated tests (see [Development](#development)). Windows and Linux are untested. Please report problems on the [issue tracker](https://github.com/andmkv/asetrio/issues).
+Palette Trio is a **public beta (0.5)**. It has been tested by hand on macOS with Aseprite 1.3.17 and by automated tests (see [Development](#development)). Windows and Linux are untested. Please report problems on the [issue tracker](https://github.com/andmkv/asetrio/issues).
 
 > ### ⚠ Light: "Replace source" is not safe across restarts
 >
-> Light has two outputs. **New layer** (the default) never touches your art. **Replace source** overwrites the pixels of the source layer in the current frame.
+> Light has two outputs. **New layer** (the default) never touches your art. **Replace source** overwrites the pixels of the checked layers, on the current frame or on all frames.
 >
 > To avoid shading an already-shaded image, Palette Trio remembers the original pixels of that cel, **but only while Aseprite stays open**. The original is *not* saved in the `.aseprite` file. After you restart Aseprite, reopen the file, or edit the layer, the shaded pixels become the new source.
 >
@@ -146,11 +146,25 @@ Nothing changes the native palette except **Write to sprite palette...**, and it
 Light shades flat artwork with the Palette Trio families. Open it from the **sun** icon.
 
 1. Paint your object with base colors (or with any family's shades).
-2. Choose the **Layer**.
-3. **Family** shows the colors Light will use as a small strip. By default the family is detected automatically from the layer (any shade of a family counts). To choose by eye, click **Pick** and then the object in the preview (right-click on the preview also picks); **Auto** goes back to detection. The paint color selected in Aseprite is never used.
+2. **Check the layers** to shade in the list left of the preview (see [Layers and frames](#layers-and-frames)).
+3. **Family**: by default Light detects the family from the layer (any shade of a family counts). The tag in the top-left corner of the preview shows the colors it will use and says **Auto - click to pick**. Click the tag (or the **Pick** button), then click the object in the preview, to choose the family by eye; the tag then says **Picked - click for Auto**, and clicking it (or the **Auto** button) goes back to detection. Right-click on the preview also picks. The paint color selected in Aseprite is never used.
 4. Choose a **Shape** (Sphere, Box, Cylinder horizontal or vertical, Contour) and a **Material** on the same row. **Form** is the bevel width for Box and the curvature for Cylinder and Contour.
 5. **Place the light** by clicking or dragging in the preview. It can go anywhere, including far outside the object.
-6. Adjust **Height**, **Falloff**, **Contrast**, **Shades** (3 or 5) and **Dither**, then choose the **Output** and press the button.
+6. Adjust **Height**, **Falloff**, **Contrast**, **Shades** (3 or 5) and **Dither**.
+7. Choose the **Output** and whether it applies to **This frame** or **All frames**, then press the button.
+
+### Keep colors, and the Families button
+
+- **Keep** protects colors that Light must not shade, such as outlines, eyes or highlights you painted by hand. Click **Add color**, then click those colors in the preview (the button turns into **Done**). Click a kept color again to shade it again; **Clear** forgets them all. The kept colors show as small squares under the family strip in the preview. They apply to all checked layers.
+- **Families...** (bottom row) opens the same **Choose palette colors** window as the panel's menu: it decides which palette colors become families, which is what Light shades with. The preview updates when you apply the choice. Useful when Light says there are no families.
+
+### Layers and frames
+
+- **Layer list** (left of the preview, top layer first). The checkbox shows a layer in the preview *and* includes it when you apply. Clicking a layer's **name** checks only that layer, which is the way to work on a single layer. **all** and **none** at the top check or clear every layer. The little color square on a row is the family Light found for that layer. Layers without a cel on the shown frame are dimmed.
+- **Preview** shows all checked layers together on the chosen frame, in sprite coordinates, lit by one light. Hide a layer by unchecking it.
+- **Frame strip** under the preview, in the style of Aseprite's own timeline but in a single row (not split by layer): a compact numbered cell per frame (as narrow as the longest frame number allows), with a dot under it that is filled when at least one checked layer has a cel on that frame and hollow when none does. Click a frame to preview it; the editor jumps to the same frame, and follows if you change frames there. The mouse wheel scrolls long animations.
+- **This frame / All frames** (next to Output): apply to the frame shown in the strip, or to every frame. The whole job, every layer and frame, is **one undo step**. The light is the same on all frames; it does not animate.
+- **All checked layers share the same settings** (shape, material, form, light, height, falloff, contrast, shades, dither, options), which Light stores on each of them. Each layer still detects its own family when Family is on Auto. A family chosen with **Pick** applies to all checked layers. For layers that need different shapes, apply them one at a time.
 
 ### The light
 
@@ -184,15 +198,15 @@ The material is saved per layer, like the shape.
 
 | Output | Behavior |
 |---|---|
-| **New layer** (default) | Creates or updates a `Palette Trio Light - <layer>` layer for the current frame. Your source layer is untouched. |
-| **Replace source** | Asks first, then overwrites only the source cel in the current frame, as one undo step. See [the warning above](#beta-status-and-please-read-this). |
+| **New layer** (default) | Creates or updates one `Palette Trio Light - <layer>` layer per checked layer, with cels on the chosen frame(s). Your source layers are untouched. |
+| **Replace source** | Asks first, then overwrites only the checked layers' cels on the chosen frame(s), as one undo step. See [the warning above](#beta-status-and-please-read-this). |
 
 Details:
 
-- Only pixels that belong to a family are shaded. Transparent pixels, unknown colors and the colors listed under *Keep colors* stay as they are. Alpha is kept.
+- Only pixels that belong to a family are shaded. Transparent pixels, unknown colors and *kept* colors stay as they are. Alpha is kept.
 - Options (in the dialog): **Keep outlines** (leaves the 1-pixel alpha outline unshaded), **Separate objects** (shades disconnected objects one by one).
 - The dialog is compact; if it still does not fit your screen, it gets scrollbars. **Refresh** (bottom row) re-reads the layer list, and **Colors...** opens the choice of which palette colors are families (the preview updates when you apply it).
-- Light works on the current frame and on RGB sprites only. There are no cast shadows.
+- Light works on RGB sprites only. There are no cast shadows.
 - The result is a stylized 2.5D shading from the object's silhouette, so it works best on simple shapes. Large layers can take a moment to preview.
 
 ## Saving and undo
@@ -208,7 +222,7 @@ Details:
 - **Replace source** keeps the original only for the current session (see above).
 - Aseprite 1.3.17 can leave stale pixels when a script window is resized by hand. That is an Aseprite redraw issue; Palette Trio avoids triggering it but cannot fix it. Moving or resizing the window again repaints it.
 - Running the menu command again reuses the open window, but Aseprite's API cannot raise it above other windows.
-- Light is RGB only, current frame only, and approximates 3D from a silhouette.
+- Light is RGB only, shades every frame with the same still light (it does not animate), and approximates 3D from a silhouette. Big sprites with many layers and frames take a while in pure Lua; try one frame first.
 
 ## Development
 

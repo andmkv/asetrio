@@ -14,6 +14,7 @@ local ctx = {
   menu = load("src/menu.lua"), about = load("src/about.lua"),
   lightEngine = load("src/light_engine.lua"), lightAseprite = load("src/light_aseprite.lua"),
   lightUI = load("src/light_ui.lua"), lightView = load("src/light_view.lua"),
+  lightWidgets = load("src/light_widgets.lua"), lightJob = load("src/light_job.lua"),
   namespace = "palette-trio/palette-trio", preferences = {},
   selectedRow = 0, selectedSlot = "base", scroll = 0,
 }
@@ -396,7 +397,10 @@ step("Light layout: compact rows, Family label on Pick/Auto, scrollbars when it 
   local light = ctx.lightDialog
   assert(light:widget("family") == nil and light:widget("familyStrip") == nil, "no HEX list, no separate strip row")
   assert(light:widget("pick").props.label == "Family", "Family label sits on the Pick/Auto row")
-  assert(light:widget("autoFamily").props.enabled == false, "Auto is disabled while already automatic")
+  assert(light:widget("autoFamily").props.enabled ~= false, "Auto is never greyed out")
+  assert(light:widget("excludedColors") == nil, "no HEX entry for kept colors")
+  assert(light:widget("keepAdd").props.label == "Keep" and light:widget("keepClear").props.enabled == false)
+  assert(light:widget("openPalette").props.text == "Families...", "the Colors button is named for what it does")
   for _, gone in ipairs({ "cylinderAxis", "bevel", "curvature", "closeLight" }) do
     assert(light:widget(gone) == nil, gone .. " removed")
   end
@@ -449,6 +453,7 @@ step("Light eyedropper picks a family from a shade color; Auto resets it", funct
   local shade = ctx.model.rows[2].shades.highlight.color
   local cel = sprite.layers[1]:cel(1)
   cel.image:drawPixel(5, 5, app.pixelColor.rgba(shade.r, shade.g, shade.b, 255))
+  ctx.lightUI.invalidate(ctx)  -- the sprite "change" event does this in Aseprite
   assert(ctx.lightUI.regeneratePreview(ctx))
   fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
   local t = ctx.light.viewT
@@ -458,13 +463,14 @@ step("Light eyedropper picks a family from a shade color; Auto resets it", funct
   assert(not ctx.light.picking, "pick mode ends after one click")
   assert(ctx.light.layer.familyRowId == ctx.model.rows[2].id, "picked family 2 from its highlight")
   assert(ctx.light.status:match("Picked"), ctx.light.status)
-  assert(light:widget("autoFamily").props.enabled == true, "Auto becomes available after a pick")
+  assert(light:widget("autoFamily").props.enabled ~= false)
   -- Clicking transparent space explains instead of changing the family.
   x, y = at(0, 0)
   fire(light, "lightPreview", "onmousedown", { x = x, y = y, button = MouseButton.RIGHT })
   assert(ctx.light.layer.familyRowId == ctx.model.rows[2].id)
   -- A non-family color explains and keeps the family.
   cel.image:drawPixel(6, 6, app.pixelColor.rgba(10, 250, 10, 255))
+  ctx.lightUI.invalidate(ctx)
   ctx.lightUI.regeneratePreview(ctx)
   x, y = at(6, 6)
   fire(light, "lightPreview", "onmousedown", { x = x, y = y, button = MouseButton.RIGHT })
@@ -473,18 +479,49 @@ step("Light eyedropper picks a family from a shade color; Auto resets it", funct
   fire(light, "autoFamily", "onclick")
   assert(ctx.light.layer.familyRowId == nil, "Auto returns to detection")
 end)
+step("Light family tag in the preview is a button: click to pick, click again for Auto", function()
+  local light = ctx.lightDialog
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  local tag = ctx.light.familyTag
+  assert(tag and tag.width > 40 and tag.height > 8, "the tag has a clickable area")
+  -- It is clickable from the preview whether the family is automatic or picked.
+  ctx.light.layer.familyRowId = nil
+  ctx.lightUI.regeneratePreview(ctx)
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  tag = ctx.light.familyTag
+  local cx, cy = tag.x + 3, tag.y + 3
+  fire(light, "lightPreview", "onmousemove", { x = cx, y = cy })
+  assert(ctx.light.hoverTag == true, "hover is shown")
+  fire(light, "lightPreview", "onmousedown", { x = cx, y = cy, button = MouseButton.LEFT })
+  assert(ctx.light.picking == true and not ctx.light.dragging, "Auto tag starts picking, it does not move the light")
+  assert(light:widget("pick").props.text == "Picking...")
+  -- Pick a family by clicking an object pixel, then the tag says Picked and goes back to Auto.
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  local t = ctx.light.viewT
+  local x, y = ctx.lightView.toScreen(t, 5.5, 5.5)
+  fire(light, "lightPreview", "onmousedown", { x = x, y = y, button = MouseButton.LEFT })
+  assert(ctx.light.layer.familyRowId ~= nil and not ctx.light.picking, "picked")
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  tag = ctx.light.familyTag
+  fire(light, "lightPreview", "onmousedown", { x = tag.x + 3, y = tag.y + 3, button = MouseButton.LEFT })
+  assert(ctx.light.layer.familyRowId == nil and not ctx.light.picking, "clicking the Picked tag returns to Auto")
+  assert(ctx.light.status:match("automatically"), ctx.light.status)
+  -- The Auto button works too, also while picking.
+  fire(light, "pick", "onclick")
+  fire(light, "autoFamily", "onclick")
+  assert(not ctx.light.picking and ctx.light.layer.familyRowId == nil)
+end)
 step("Light point light: drag anywhere (also outside the object), stored in sprite coordinates", function()
   local light = ctx.lightDialog
   fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
   local t = ctx.light.viewT
-  local celPos = sprite.layers[1]:cel(1).position
-  -- Drag to a point far outside the 12x12 cel (cel x = -10, y = 20).
-  local sx, sy = ctx.lightView.toScreen(t, -10, 20)
+  -- Drag to a point far outside the 12x12 sprite (x = -10, y = 20).
+  local sx, sy = ctx.lightView.toScreen(t, -9.5, 20.5)
   fire(light, "lightPreview", "onmousedown", { x = sx, y = sy, button = MouseButton.LEFT })
   assert(ctx.light.dragging)
   fire(light, "lightPreview", "onmousemove", { x = sx, y = sy })
   fire(light, "lightPreview", "onmouseup", { x = sx, y = sy, button = MouseButton.LEFT })
-  assert(ctx.light.shared.lightX == celPos.x - 10 and ctx.light.shared.lightY == celPos.y + 20,
+  assert(ctx.light.shared.lightX == -10 and ctx.light.shared.lightY == 20,
     "light at " .. tostring(ctx.light.shared.lightX) .. "," .. tostring(ctx.light.shared.lightY))
   local saved = ctx.lightAseprite.loadShared(sprite, ctx.namespace)
   assert(saved.lightX == ctx.light.shared.lightX and saved.lightY == ctx.light.shared.lightY, "saved on the sprite")
@@ -601,6 +638,259 @@ step("Light replace-source output asks first and changes only the source cel", f
   local after = layer:cel(1).image.bytes
   fire(light, "applyLight", "onclick")
   assert(layer:cel(1).image.bytes == after, "repeat Apply does not compound")
+end)
+-- A second document: 3 frames, two object layers ("Back", "Front"; Front has
+-- no cel on frame 3), used by the multi-layer / multi-frame steps below.
+local multi, multiBack, multiFront
+local function square(size, color)
+  local image = Image(size, size, ColorMode.RGB)
+  for y = 0, size - 1 do for x = 0, size - 1 do
+    image:drawPixel(x, y, app.pixelColor.rgba(color[1], color[2], color[3], 255))
+  end end
+  return image
+end
+local function layerRow(name)
+  local W = ctx.lightWidgets.Layers
+  for display = 1, #ctx.light.records do
+    local record = ctx.light.records[#ctx.light.records - display + 1]
+    if record.name == name then return display, record end
+  end
+end
+local function clickLayer(name, kind)
+  local W = ctx.lightWidgets.Layers
+  local display = layerRow(name)
+  local x = kind == "box" and (W.PAD + 2) or 50
+  fire(ctx.lightDialog, "layerList", "onmousedown",
+    { x = x, y = W.rowTop(display, ctx.light.layerScroll or 0) + 3, button = MouseButton.LEFT })
+end
+local function checked()
+  local names = {}
+  for _, record in ipairs(ctx.lightUI.selectedRecords(ctx)) do names[#names + 1] = record.name end
+  return table.concat(names, ",")
+end
+
+step("multi-layer sprite: Light lists every layer and starts with one checked", function()
+  multi = Sprite(16, 16)
+  local palette = Palette(#colors)
+  for i, c in ipairs(colors) do palette:setColor(i - 1, Color { r = c[1], g = c[2], b = c[3] }) end
+  multi:setPalette(palette)
+  multiBack = multi.layers[1]
+  multiBack.name = "Back"
+  multi:deleteCel(multiBack:cel(1))
+  multi:newCel(multiBack, 1, square(6, colors[2]), Point(2, 2))
+  multi:newEmptyFrame(); multi:newEmptyFrame()
+  multi:newCel(multiBack, 2, square(6, colors[2]), Point(2, 2))
+  multi:newCel(multiBack, 3, square(6, colors[2]), Point(2, 2))
+  multiFront = multi:newLayer()
+  multiFront.name = "Front"
+  multi:newCel(multiFront, 1, square(5, colors[3]), Point(8, 8))
+  multi:newCel(multiFront, 2, square(5, colors[3]), Point(8, 8))
+  app.sprite = multi
+  app.frame = multi.frames[1]
+  ctx.session.load(ctx, multi)
+  ctx.lightUI.reload(ctx)
+  assert(#ctx.light.records == 2 and ctx.light.records[1].name == "Back" and ctx.light.records[2].name == "Front")
+  assert(#ctx.lightUI.selectedRecords(ctx) == 1, "one layer checked at first: " .. checked())
+  assert(ctx.light.frame == 1)
+  fire(ctx.lightDialog, "layerList", "onpaint", { context = stubGc(ctx.lightWidgets.Layers.WIDTH, 150) })
+  fire(ctx.lightDialog, "frameStrip", "onpaint", { context = stubGc(120, ctx.lightWidgets.Frames.HEIGHT) })
+end)
+step("layer list: checkbox toggles, name selects only that layer, all / none", function()
+  local light = ctx.lightDialog
+  local W = ctx.lightWidgets.Layers
+  ctx.lightUI.soloLayer(ctx, ctx.light.records[1].uuid)
+  assert(checked() == "Back")
+  clickLayer("Front", "box")
+  assert(checked() == "Back,Front", "the checkbox adds a layer: " .. checked())
+  assert(#ctx.light.results == 2, "the preview shows both layers")
+  clickLayer("Back", "box")
+  assert(checked() == "Front" and #ctx.light.results == 1, "unchecking hides the layer from the preview")
+  clickLayer("Back", "name")
+  assert(checked() == "Back", "clicking a name selects only that layer")
+  fire(light, "layerList", "onmousedown", { x = 5, y = 3, button = MouseButton.LEFT })
+  assert(checked() == "Back,Front", "all")
+  fire(light, "layerList", "onmousedown", { x = W.WIDTH - 5, y = 3, button = MouseButton.LEFT })
+  assert(checked() == "" and ctx.light.results == nil, "none: nothing to preview")
+  assert(ctx.light.status == "No layer checked", ctx.light.status)
+  fire(light, "layerList", "onwheel", { deltaY = 1 })
+  fire(light, "layerList", "onmousedown", { x = 5, y = 3, button = MouseButton.LEFT })
+  fire(light, "layerList", "onpaint", { context = stubGc(W.WIDTH, 150) })
+end)
+step("multi-layer preview: composite in sprite coordinates, one light for all layers", function()
+  local light = ctx.lightDialog
+  assert(#ctx.light.results == 2)
+  local scene = ctx.light.scene
+  assert(scene.x == 2 and scene.y == 2 and scene.width == 11, "scene is the union of both objects")
+  assert(ctx.light.shared.lightX and ctx.light.shared.lightHeight, "the light was placed from the scene")
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  -- The eyedropper finds the topmost layer's pixel under the cursor.
+  local t = ctx.light.viewT
+  local x, y = ctx.lightView.toScreen(t, 9.5, 9.5)   -- inside Front (8..12), on top of nothing else
+  local pixel, result = ctx.lightUI.previewPixel(ctx, x, y)
+  assert(pixel and result.record.name == "Front", "picks Front")
+  x, y = ctx.lightView.toScreen(t, 3.5, 3.5)
+  pixel, result = ctx.lightUI.previewPixel(ctx, x, y)
+  assert(pixel and result.record.name == "Back", "picks Back")
+  x, y = ctx.lightView.toScreen(t, 14.5, 1.5)
+  assert(ctx.lightUI.previewPixel(ctx, x, y) == nil, "empty space")
+end)
+step("Keep: click colors in the preview to leave them unshaded; click again, Clear", function()
+  local light = ctx.lightDialog
+  ctx.lightUI.selectAllLayers(ctx, true)
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })
+  local t = ctx.light.viewT
+  local function frontResult()
+    for _, r in ipairs(ctx.light.results) do if r.record.name == "Front" then return r end end
+  end
+  assert(frontResult().stats.shaded == 25, "Front is shaded before keeping its color")
+  fire(light, "keepAdd", "onclick")
+  assert(ctx.light.keeping and light:widget("keepAdd").props.text == "Done")
+  local x, y = ctx.lightView.toScreen(t, 9.5, 9.5)       -- a Front pixel
+  fire(light, "lightPreview", "onmousedown", { x = x, y = y, button = MouseButton.LEFT })
+  assert(#ctx.light.layer.excludedColors == 1, "the clicked color is kept")
+  assert(ctx.light.keeping, "keep mode stays on for more clicks")
+  assert(frontResult().stats.shaded == 0, "kept pixels are left exactly as they are")
+  assert(light:widget("keepClear").props.enabled == true)
+  assert(ctx.lightAseprite.loadLayerSettings(multiFront, ctx.namespace).excludedColors[1], "stored on the checked layers")
+  assert(ctx.lightAseprite.loadLayerSettings(multiBack, ctx.namespace).excludedColors[1])
+  fire(light, "lightPreview", "onpaint", { context = stubGc(224, 150) })   -- draws the chips
+  fire(light, "lightPreview", "onmousedown", { x = x, y = y, button = MouseButton.LEFT })
+  assert(#ctx.light.layer.excludedColors == 0 and frontResult().stats.shaded == 25, "clicking again shades it again")
+  x, y = ctx.lightView.toScreen(t, 15.5, 1.5)             -- empty space
+  fire(light, "lightPreview", "onmousedown", { x = x, y = y, button = MouseButton.LEFT })
+  assert(ctx.light.status:match("inside an object"), ctx.light.status)
+  fire(light, "keepAdd", "onclick")
+  assert(not ctx.light.keeping and light:widget("keepAdd").props.text == "Add color", "Done ends keep mode")
+  fire(light, "keepAdd", "onclick")
+  x, y = ctx.lightView.toScreen(t, 9.5, 9.5)
+  fire(light, "lightPreview", "onmousedown", { x = x, y = y, button = MouseButton.LEFT })
+  fire(light, "keepClear", "onclick")
+  assert(#ctx.light.layer.excludedColors == 0 and frontResult().stats.shaded == 25, "Clear shades everything again")
+  -- Picking a family and keeping colors are exclusive modes.
+  fire(light, "pick", "onclick")
+  assert(ctx.light.picking and not ctx.light.keeping)
+  fire(light, "keepAdd", "onclick")
+  assert(ctx.light.keeping and not ctx.light.picking)
+  fire(light, "keepAdd", "onclick")
+end)
+step("frame strip: click selects a frame and the editor follows; wheel scrolls", function()
+  local light = ctx.lightDialog
+  local F = ctx.lightWidgets.Frames
+  fire(light, "frameStrip", "onpaint", { context = stubGc(120, F.HEIGHT) })
+  noBoundsWrites("frame strip", function()
+    fire(light, "frameStrip", "onmousedown", { x = ctx.light.cellW + 3, y = 5, button = MouseButton.LEFT })
+  end)
+  assert(ctx.light.frame == 2, "frame 2 selected")
+  assert(app.frame.frameNumber == 2, "the editor follows the strip")
+  assert(#ctx.light.results == 2, "both layers have cels on frame 2")
+  fire(light, "frameStrip", "onmousedown", { x = ctx.light.cellW * 2 + 3, y = 5, button = MouseButton.LEFT })
+  assert(ctx.light.frame == 3 and #ctx.light.results == 1, "on frame 3 only Back has a cel")
+  assert(ctx.light.skipped[multiFront.uuid and tostring(multiFront.uuid)], "Front is marked as having no cel here")
+  assert(ctx.light.status:match("without a cel"), ctx.light.status)
+  fire(light, "frameStrip", "onwheel", { deltaY = 1 })
+  -- The editor changes frame (sitechange): the strip follows without a loop.
+  app.frame = multi.frames[1]
+  ctx.lightUI.syncFrame(ctx)
+  assert(ctx.light.frame == 1 and #ctx.light.results == 2)
+  fire(light, "frameStrip", "onpaint", { context = stubGc(120, F.HEIGHT) })
+end)
+step("frame strip dots: filled where a checked layer has a cel, per the checked set", function()
+  local light = ctx.lightDialog
+  local F = ctx.lightWidgets.Frames
+  assert(F.HEIGHT == F.NUM_H * 2, "numbers on top, dots below")
+  fire(light, "frameStrip", "onpaint", { context = stubGc(120, F.HEIGHT) })
+  assert(ctx.light.cellW >= F.MIN_CELL_W and ctx.light.cellW <= 20, "compact cells: " .. tostring(ctx.light.cellW))
+  ctx.lightUI.selectAllLayers(ctx, true)
+  local map = ctx.lightUI.celFrames(ctx)
+  assert(map[1] and map[2] and map[3], "Back has a cel on every frame")
+  ctx.lightUI.soloLayer(ctx, tostring(multiFront.uuid))
+  map = ctx.lightUI.celFrames(ctx)
+  assert(map[1] and map[2] and not map[3], "Front has none on frame 3")
+  fire(light, "frameStrip", "onpaint", { context = stubGc(120, F.HEIGHT) })
+  ctx.lightUI.selectAllLayers(ctx, true)
+  assert(ctx.lightUI.celFrames(ctx)[3], "all layers: frame 3 has a cel again")
+  assert(ctx.lightUI.celFrames(ctx) == ctx.lightUI.celFrames(ctx), "cached while nothing changes")
+end)
+step("Frames: All frames + New layer writes one output layer per source, one undo step", function()
+  local light = ctx.lightDialog
+  local data = light.data
+  data.output = "New layer"
+  data.scope = "All frames"
+  light.data = data
+  fire(light, "output", "onchange")
+  fire(light, "scope", "onchange")
+  assert(ctx.light.scope == "All frames" and ctx.light.outputMode == "New layer")
+  local before = #multi.layers
+  fire(light, "applyLight", "onclick")
+  assert(#multi.layers == before + 2, "two output layers: " .. #multi.layers)
+  local out
+  for _, layer in ipairs(multi.layers) do if layer.name == "Palette Trio Light - Back" then out = layer end end
+  assert(out and out:cel(1) and out:cel(2) and out:cel(3), "Back output on all 3 frames")
+  assert(ctx.light.status:match("2 layers, 3 frames"), ctx.light.status)
+  app.command.Undo()
+  assert(#multi.layers == before, "one undo removes both output layers")
+  -- "This frame" writes just the current frame.
+  data = light.data
+  data.scope = "This frame"
+  light.data = data
+  fire(light, "scope", "onchange")
+  fire(light, "applyLight", "onclick")
+  for _, layer in ipairs(multi.layers) do
+    if layer.name == "Palette Trio Light - Back" then
+      assert(layer:cel(1) and not layer:cel(2) and not layer:cel(3), "only the current frame")
+    end
+  end
+  app.command.Undo()
+  assert(#multi.layers == before)
+end)
+step("Frames: Replace source on all frames asks, shades every checked cel, undo restores, re-apply is stable", function()
+  local light = ctx.lightDialog
+  local function dump()
+    local out = {}
+    for _, layer in ipairs({ multiBack, multiFront }) do
+      for f = 1, 3 do
+        local cel = layer:cel(f)
+        out[#out + 1] = cel and cel.image.bytes or "-"
+      end
+    end
+    return out
+  end
+  local original = dump()
+  local data = light.data
+  data.output = "Replace source"
+  data.scope = "All frames"
+  light.data = data
+  fire(light, "output", "onchange")
+  fire(light, "scope", "onchange")
+  local question
+  local saved = ctx.alert
+  ctx.alert = function(t) question = table.concat(t.text, " "); return 1 end
+  fire(light, "applyLight", "onclick")
+  ctx.alert = saved
+  assert(question and question:match("2 layers") and question:match("3 frames") and question:match("5 cels"), question)
+  local first = dump()
+  local changed = 0
+  for i = 1, #first do if first[i] ~= original[i] then changed = changed + 1 end end
+  assert(changed == 5, "every cel was shaded: " .. changed)
+  fire(light, "applyLight", "onclick")
+  local second = dump()
+  for i = 1, #second do assert(second[i] == first[i], "re-applying shades the original, cel " .. i) end
+  app.command.Undo(); app.command.Undo()
+  local restored = dump()
+  for i = 1, #restored do assert(restored[i] == original[i], "undo restores cel " .. i) end
+  data = light.data
+  data.output = "New layer"
+  data.scope = "This frame"
+  light.data = data
+  fire(light, "output", "onchange")
+  fire(light, "scope", "onchange")
+end)
+step("back to the first document", function()
+  app.sprite = sprite
+  app.frame = sprite.frames[1]
+  ctx.session.load(ctx, sprite)
+  ctx.lightUI.reload(ctx)
+  assert(ctx.light.sprite == sprite and #ctx.lightUI.selectedRecords(ctx) >= 1)
 end)
 step("Light with no families shows recovery", function()
   local saved = ctx.model

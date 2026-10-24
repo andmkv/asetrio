@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.3
+
+- Light: the frame strip is much more compact, like Aseprite's own timeline: each cell is only as wide as the longest frame number needs (about 12 px for up to 9 frames, a little more for 10+ and 100+), the two rows are half as tall, and the dots are smaller.
+
+## 0.5.2
+
+- Light: the frame strip is now a simple one-row timeline like Aseprite's own: numbered cells, the chosen frame highlighted, and a dot under each frame that is filled when a checked layer has a cel there (hollow otherwise). No more thumbnails.
+
+## 0.5.1
+
+- Light: **Keep colors** no longer asks for HEX codes. Click **Add color** and then click colors in the preview; they show as chips in the preview, click again to remove, **Clear** removes all. (Colors stored by earlier versions are kept.)
+- Light: the **auto / picked** label in the preview is now a real button (with the family's colors): click it to pick a family, click again to return to Auto. The **Auto** button is no longer greyed out.
+- Light: the **Colors...** button is now **Families...**, which says what it does: choose which palette colors are families.
+
+## 0.5.0
+
+- Light: **several layers at once.** A layer list left of the preview with a checkbox per layer (and *all* / *none*); clicking a name selects just that layer. The preview shows all checked layers together on the chosen frame, and Apply shades them one after another with the same settings and one shared light. Each layer detects its own family.
+- Light: **frames.** A one-row frame strip with thumbnails under the preview selects the frame to preview (the editor follows both ways). New **This frame / All frames** option next to Output; the whole job is one undo step.
+- Light: the light position, height and falloff are the same for all layers. The preview now shows the whole sprite, so the light can be placed relative to everything.
+- Fixed: the **Separate objects** checkbox never reached the lighting engine, so disconnected objects were always shaded separately. It now works.
+
 ## 0.4.1
 
 - Fixed: the **Colors...** button in Light did nothing when Palette Trio's panel was already open and families existed. It now always opens **Choose palette colors**, and the preview refreshes when you apply the choice.

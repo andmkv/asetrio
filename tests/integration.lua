@@ -21,6 +21,8 @@ local function newCtx()
     session = load("src/session.lua"),
     lightEngine = load("src/light_engine.lua"),
     lightAseprite = load("src/light_aseprite.lua"),
+    lightWidgets = load("src/light_widgets.lua"),
+    lightJob = load("src/light_job.lua"),
     namespace = NAMESPACE,
     selectedRow = 0, selectedSlot = "base", scroll = 0,
   }
@@ -604,6 +606,254 @@ test("document switching keeps Light family picks per layer and families per spr
   ctx.session.load(ctx, a)
   equal(#ctx.model.rows, 8)
   equal(ctx.lightAseprite.loadLayerSettings(a.layers[1], NAMESPACE).familyRowId, ctx.model.rows[3].id)
+end)
+
+
+------------------------------------------------------------------------------
+-- Light with several layers and frames
+------------------------------------------------------------------------------
+
+-- A 16x16 RGB sprite with `frames` frames and two object layers:
+--   "Back"  (bottom): a 6x6 square of palette color 1, at (2,2)
+--   "Front" (top):    a 5x5 square of palette color 5, at (8,8)
+-- Every layer has a cel on every frame (Front is missing on frame 3 when
+-- `gap` is true). Returns sprite, back layer, front layer.
+local function multiSprite(frames, gap)
+  local sprite = spriteWithPalette(SMALL, ColorMode.RGB, 16, 16)
+  local back = sprite.layers[1]
+  back.name = "Back"
+  local function square(size, color)
+    local image = Image(size, size, ColorMode.RGB)
+    for y = 0, size - 1 do for x = 0, size - 1 do
+      image:drawPixel(x, y, app.pixelColor.rgba(color[1], color[2], color[3], 255))
+    end end
+    return image
+  end
+  -- Replace the background cel with a small object.
+  sprite:deleteCel(back:cel(1))
+  sprite:newCel(back, 1, square(6, SMALL[1]), Point(2, 2))
+  for _ = 2, frames do sprite:newEmptyFrame() end
+  for frame = 2, frames do sprite:newCel(back, frame, square(6, SMALL[1]), Point(2, 2)) end
+  local front = sprite:newLayer()
+  front.name = "Front"
+  for frame = 1, frames do
+    if not (gap and frame == 3) then sprite:newCel(front, frame, square(5, SMALL[5]), Point(8, 8)) end
+  end
+  return sprite, back, front
+end
+
+local function lightCtx(sprite)
+  local ctx = newCtx()
+  ctx.session.load(ctx, sprite)
+  app.sprite = sprite
+  ctx.light = {
+    shared = ctx.lightAseprite.normalizeShared({ levels = 3, lightX = -6, lightY = -6, lightHeight = 14, falloff = 30 }),
+    layer = ctx.lightAseprite.defaultLayer(),
+    snapshots = {}, cache = { normalEntries = {} }, dataCache = {},
+  }
+  return ctx
+end
+
+local function cellDump(layer, frame)
+  local cel = layer:cel(frame)
+  return cel and (cel.position.x .. "," .. cel.position.y .. ":" .. imageDump(cel.image)) or "none"
+end
+
+test("imageLayers lists every visible layer, even without a cel on the current frame", function()
+  local sprite, back, front = multiSprite(3, true)
+  local ctx = newCtx()
+  local all = ctx.lightAseprite.imageLayers(sprite, NAMESPACE)
+  equal(#all, 2)
+  equal(all[1].name, "Back"); equal(all[2].name, "Front")
+  equal(#ctx.lightAseprite.sourceLayers(sprite, 3, NAMESPACE), 1, "the per-frame list still needs a cel")
+  front.isVisible = false
+  equal(#ctx.lightAseprite.imageLayers(sprite, NAMESPACE), 1, "hidden layers are not offered")
+end)
+
+test("the checked layers are stored on the sprite and survive reload", function()
+  local sprite, back, front = multiSprite(2)
+  local ctx = newCtx()
+  local shared = ctx.lightAseprite.normalizeShared({ sourceLayerUuids = { tostring(back.uuid), tostring(front.uuid), 5, "" } })
+  equal(#shared.sourceLayerUuids, 2, "invalid entries are dropped")
+  ctx.lightAseprite.saveShared(sprite, NAMESPACE, shared)
+  local loaded = ctx.lightAseprite.loadShared(sprite, NAMESPACE)
+  equal(#loaded.sourceLayerUuids, 2)
+  equal(loaded.sourceLayerUuids[2], tostring(front.uuid))
+  equal(#ctx.lightAseprite.normalizeShared({}).sourceLayerUuids, 0, "older settings have none")
+end)
+
+test("Job shades several layers on several frames with one shared light", function()
+  local sprite, back, front = multiSprite(3, true)
+  local ctx = lightCtx(sprite)
+  local records = ctx.lightAseprite.imageLayers(sprite, NAMESPACE)
+  local families = ctx.model.shadeFamilies(ctx.model, 3)
+  local frames = ctx.lightJob.frames(ctx, records, { 1, 2, 3 }, families)
+  equal(#frames, 3)
+  equal(#frames[1].results, 2); equal(#frames[2].results, 2)
+  equal(#frames[3].results, 1, "Front has no cel on frame 3")
+  equal(#frames[3].skipped, 1)
+  equal(frames[3].skipped[1].name, "Front")
+  local r = frames[1].results
+  assert(r[1].record.name == "Back" and r[2].record.name == "Front", "bottom-to-top order")
+  assert(r[1].stats.shaded == 36 and r[2].stats.shaded == 25, "every family pixel is shaded")
+  -- The scene (union of both objects) is the same for both layers.
+  equal(frames[1].scene.x, 2); equal(frames[1].scene.width, 11)
+  -- Each layer got its own family automatically.
+  assert(r[1].detection.index == 1 and r[2].detection.index == 5, "auto families: " .. r[1].detection.index .. "," .. r[2].detection.index)
+  for _, result in ipairs(r) do
+    local allowed = {}
+    for _, c in ipairs(result.family.allColors) do allowed[string.format("%d,%d,%d", c.r, c.g, c.b)] = true end
+    for _, p in ipairs(result.output) do
+      if p.a > 0 then assert(allowed[string.format("%d,%d,%d", p.r, p.g, p.b)], "output stays in the family") end
+    end
+  end
+  -- Frame data is cached until invalidated.
+  local cached = ctx.lightJob.read(ctx, records[1], 1)
+  assert(cached == ctx.lightJob.read(ctx, records[1], 1))
+  ctx.lightJob.invalidate(ctx)
+  assert(cached ~= ctx.lightJob.read(ctx, records[1], 1))
+end)
+
+test("Apply to new layers, all frames, is one undo step and never touches the sources", function()
+  local sprite, back, front = multiSprite(3, true)
+  local ctx = lightCtx(sprite)
+  local records = ctx.lightAseprite.imageLayers(sprite, NAMESPACE)
+  local families = ctx.model.shadeFamilies(ctx.model, 3)
+  local before = { back = {}, front = {} }
+  for f = 1, 3 do before.back[f], before.front[f] = cellDump(back, f), cellDump(front, f) end
+  local jobs, order = {}, {}
+  for _, fr in ipairs(ctx.lightJob.frames(ctx, records, { 1, 2, 3 }, families)) do
+    for _, result in ipairs(fr.results) do
+      local job = order[result.record.uuid]
+      if not job then job = { record = result.record, settings = ctx.light.layer, frames = {} }; order[result.record.uuid] = job; jobs[#jobs + 1] = job end
+      job.frames[#job.frames + 1] = { frame = result.frame, image = result.image, cel = result.cel }
+    end
+  end
+  local ok, layer, written = ctx.lightAseprite.applyOutputBatch(sprite, jobs, NAMESPACE)
+  equal(ok, true, tostring(layer))
+  equal(written, 5)
+  equal(#sprite.layers, 4, "one output layer per source layer")
+  local backOut, frontOut
+  for _, l in ipairs(sprite.layers) do
+    if l.name == "Palette Trio Light - Back" then backOut = l end
+    if l.name == "Palette Trio Light - Front" then frontOut = l end
+  end
+  assert(backOut and frontOut)
+  for f = 1, 3 do assert(backOut:cel(f), "Back output on frame " .. f) end
+  assert(frontOut:cel(1) and frontOut:cel(2) and frontOut:cel(3) == nil, "no cel where the source had none")
+  assert(cellDump(backOut, 1) ~= before.back[1], "the output is shaded")
+  for f = 1, 3 do
+    equal(cellDump(back, f), before.back[f], "source untouched")
+    equal(cellDump(front, f), before.front[f])
+  end
+  -- Applying again updates the same two layers instead of adding more.
+  local again = ctx.lightAseprite.applyOutputBatch(sprite, jobs, NAMESPACE)
+  equal(again, true)
+  equal(#sprite.layers, 4)
+  app.command.Undo()
+  equal(#sprite.layers, 4, "undo removes only the second application")
+  app.command.Undo()
+  equal(#sprite.layers, 2, "one undo step removes everything the first Apply created")
+  equal(cellDump(back, 2), before.back[2])
+end)
+
+test("Replace source, all layers and frames: one undo step, no compounding", function()
+  local sprite, back, front = multiSprite(3)
+  local ctx = lightCtx(sprite)
+  local records = ctx.lightAseprite.imageLayers(sprite, NAMESPACE)
+  local families = ctx.model.shadeFamilies(ctx.model, 3)
+  local original = {}
+  for f = 1, 3 do original["b" .. f], original["f" .. f] = cellDump(back, f), cellDump(front, f) end
+  local function applyAll()
+    local jobs, order = {}, {}
+    local keep = {}
+    for _, fr in ipairs(ctx.lightJob.frames(ctx, records, { 1, 2, 3 }, families)) do
+      for _, result in ipairs(fr.results) do
+        local key = result.record.uuid .. ":" .. result.frame
+        if result.usingSnapshot then keep[key] = ctx.light.snapshots[key].original end
+        local job = order[result.record.uuid]
+        if not job then job = { record = result.record, frames = {} }; order[result.record.uuid] = job; jobs[#jobs + 1] = job end
+        job.frames[#job.frames + 1] = { frame = result.frame, image = result.image }
+      end
+    end
+    local ok, snapshots = ctx.lightAseprite.replaceSourceBatch(sprite, jobs)
+    equal(ok, true, tostring(snapshots))
+    for key, snapshot in pairs(snapshots) do
+      if keep[key] then snapshot.original = keep[key] end
+      ctx.light.snapshots[key] = snapshot
+    end
+    ctx.lightJob.invalidate(ctx)
+  end
+  applyAll()
+  equal(#sprite.layers, 2, "no extra layers")
+  local first = {}
+  for f = 1, 3 do
+    first["b" .. f], first["f" .. f] = cellDump(back, f), cellDump(front, f)
+    assert(first["b" .. f] ~= original["b" .. f] and first["f" .. f] ~= original["f" .. f], "shaded on frame " .. f)
+  end
+  applyAll()
+  for f = 1, 3 do
+    equal(cellDump(back, f), first["b" .. f], "re-applying shades the original, frame " .. f)
+    equal(cellDump(front, f), first["f" .. f])
+  end
+  app.command.Undo(); app.command.Undo()
+  for f = 1, 3 do
+    equal(cellDump(back, f), original["b" .. f], "undo restores frame " .. f)
+    equal(cellDump(front, f), original["f" .. f])
+  end
+  -- A locked layer refuses the whole batch and changes nothing.
+  front.isEditable = false
+  local ok, reason = ctx.lightAseprite.replaceSourceBatch(sprite, {
+    { record = records[1], frames = { { frame = 1, image = back:cel(1).image } } },
+    { record = records[2], frames = { { frame = 1, image = front:cel(1).image } } },
+  })
+  equal(ok, false)
+  assert(reason:match("locked"), reason)
+end)
+
+test("Separate objects reaches the engine: two touching-free objects shade differently when unchecked", function()
+  local sprite = spriteWithPalette(SMALL, ColorMode.RGB, 28, 12)
+  local layer = sprite.layers[1]
+  sprite:deleteCel(layer:cel(1))
+  local image = Image(26, 10, ColorMode.RGB)
+  for _, x0 in ipairs({ 0, 16 }) do
+    for y = 0, 9 do for x = x0, x0 + 9 do
+      image:drawPixel(x, y, app.pixelColor.rgba(SMALL[3][1], SMALL[3][2], SMALL[3][3], 255))
+    end end
+  end
+  sprite:newCel(layer, 1, image, Point(1, 1))
+  local ctx = lightCtx(sprite)
+  local records = ctx.lightAseprite.imageLayers(sprite, NAMESPACE)
+  local families = ctx.model.shadeFamilies(ctx.model, 3)
+  local function dumpOutput(separate)
+    ctx.light.shared.separateComponents = separate
+    ctx.lightJob.invalidate(ctx)
+    local result = ctx.lightJob.frame(ctx, records, 1, families).results[1]
+    local parts = {}
+    for _, p in ipairs(result.output) do parts[#parts + 1] = string.format("%d%d%d", p.r % 10, p.g % 10, p.b % 10) end
+    return table.concat(parts, ",")
+  end
+  assert(dumpOutput(true) ~= dumpOutput(false), "the checkbox changes the result")
+end)
+
+test("a point light moves the lit side differently on layers at different places", function()
+  local sprite = multiSprite(1)
+  local ctx = lightCtx(sprite)
+  local records = ctx.lightAseprite.imageLayers(sprite, NAMESPACE)
+  local families = ctx.model.shadeFamilies(ctx.model, 3)
+  ctx.light.shared.lightX, ctx.light.shared.lightY = 20, 8
+  local result = ctx.lightJob.frame(ctx, records, 1, families).results
+  -- Light far right: the right edge of each object is its brighter side.
+  for _, r in ipairs(result) do
+    local byKey = {}
+    for i, c in ipairs(r.family.colors) do byKey[string.format("%d,%d,%d", c.r, c.g, c.b)] = i end
+    local function level(x, y)
+      local p = r.output[y * r.data.width + x + 1]
+      return byKey[string.format("%d,%d,%d", p.r, p.g, p.b)]
+    end
+    local w, h = r.data.width, r.data.height
+    assert(level(w - 1, h // 2) >= level(0, h // 2), r.record.name .. ": right side is lit at least as much as left")
+  end
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))
